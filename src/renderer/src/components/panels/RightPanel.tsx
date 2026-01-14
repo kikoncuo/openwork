@@ -505,7 +505,7 @@ function FilesContent(): React.JSX.Element {
   const { workspaceFiles, workspacePath, currentThreadId, setWorkspacePath, setWorkspaceFiles } =
     useAppStore()
   const [syncing, setSyncing] = useState(false)
-  const [syncSuccess, _setSyncSuccess] = useState(false)
+  const [syncSuccess] = useState(false)
 
   // Load workspace path and files for current thread
   useEffect(() => {
@@ -525,6 +525,24 @@ function FilesContent(): React.JSX.Element {
     }
     loadWorkspace()
   }, [currentThreadId, setWorkspacePath, setWorkspaceFiles])
+
+  // Listen for file changes from the workspace watcher
+  useEffect(() => {
+    if (!currentThreadId) return
+
+    const cleanup = window.api.workspace.onFilesChanged(async (data) => {
+      // Only reload if the event is for the current thread
+      if (data.threadId === currentThreadId) {
+        console.log('[FilesContent] Files changed, reloading...', data)
+        const result = await window.api.workspace.loadFromDisk(currentThreadId)
+        if (result.success && result.files) {
+          setWorkspaceFiles(result.files)
+        }
+      }
+    })
+
+    return cleanup
+  }, [currentThreadId, setWorkspaceFiles])
 
   // Handle selecting a workspace folder
   async function handleSelectFolder(): Promise<void> {
