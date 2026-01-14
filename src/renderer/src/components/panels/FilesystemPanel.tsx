@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Folder, File, ChevronRight, ChevronDown, FolderOpen, Download, Loader2, Check, FolderSync } from 'lucide-react'
+import { Folder, File, ChevronRight, ChevronDown, FolderOpen, Loader2, RefreshCw } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -9,8 +9,7 @@ import type { FileInfo } from '@/types'
 export function FilesystemPanel() {
   const { workspaceFiles, workspacePath, currentThreadId, setWorkspacePath, setWorkspaceFiles } = useAppStore()
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
-  const [syncing, setSyncing] = useState(false)
-  const [syncSuccess, setSyncSuccess] = useState(false)
+  const [loading, setLoading] = useState(false)
   
   // Load workspace path for current thread
   useEffect(() => {
@@ -54,54 +53,38 @@ export function FilesystemPanel() {
   async function handleSelectFolder() {
     if (!currentThreadId) return
     
-    setSyncing(true)
+    setLoading(true)
     try {
       const path = await window.api.workspace.select(currentThreadId)
       if (path) {
         setWorkspacePath(path)
+        // Load files from disk
+        const result = await window.api.workspace.loadFromDisk(currentThreadId)
+        if (result.success) {
+          setWorkspaceFiles(result.files)
+        }
       }
     } catch (e) {
       console.error('[FilesystemPanel] Select folder error:', e)
     } finally {
-      setSyncing(false)
+      setLoading(false)
     }
   }
   
-  // Handle sync to disk
-  async function handleSyncToDisk() {
+  // Handle refreshing files from disk
+  async function handleRefresh() {
     if (!currentThreadId) return
     
-    // If no files, just select a folder
-    if (workspaceFiles.length === 0) {
-      await handleSelectFolder()
-      return
-    }
-    
-    setSyncing(true)
-    setSyncSuccess(false)
-    
+    setLoading(true)
     try {
-      const result = await window.api.workspace.syncToDisk(currentThreadId)
-      
+      const result = await window.api.workspace.loadFromDisk(currentThreadId)
       if (result.success) {
-        setSyncSuccess(true)
-        if (result.targetPath) {
-          setWorkspacePath(result.targetPath)
-        }
-        // Reset success indicator after 2 seconds
-        setTimeout(() => setSyncSuccess(false), 2000)
-        
-        console.log('[FilesystemPanel] Synced files:', result.synced)
-        if (result.errors?.length) {
-          console.warn('[FilesystemPanel] Sync errors:', result.errors)
-        }
-      } else {
-        console.error('[FilesystemPanel] Sync failed:', result.error)
+        setWorkspaceFiles(result.files)
       }
     } catch (e) {
-      console.error('[FilesystemPanel] Sync error:', e)
+      console.error('[FilesystemPanel] Refresh error:', e)
     } finally {
-      setSyncing(false)
+      setLoading(false)
     }
   }
 
@@ -243,41 +226,70 @@ export function FilesystemPanel() {
   // Get root level items (all paths are normalized to start with /)
   const rootItems = tree.get('/') || []
 
+  // If no workspace is selected, show selection prompt
+  if (!workspacePath) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="p-4 border-b border-border">
+          <span className="text-section-header">WORKSPACE</span>
+        </div>
+        <div className="flex flex-col items-center justify-center flex-1 text-center px-4">
+          <FolderOpen className="size-12 mb-4 text-muted-foreground opacity-50" />
+          <span className="text-sm font-medium mb-2">No workspace selected</span>
+          <span className="text-xs text-muted-foreground mb-4">
+            Select a folder for the agent to work in
+          </span>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={handleSelectFolder}
+            disabled={loading || !currentThreadId}
+            className="h-8 px-4"
+          >
+            {loading ? (
+              <Loader2 className="size-4 mr-2 animate-spin" />
+            ) : (
+              <FolderOpen className="size-4 mr-2" />
+            )}
+            Select Folder
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col h-full">
       <div className="p-4 border-b border-border">
         <div className="flex items-center justify-between">
           <span className="text-section-header">WORKSPACE</span>
           <div className="flex items-center gap-2">
-            {workspacePath && (
-              <span className="text-[10px] text-muted-foreground truncate max-w-[80px]" title={workspacePath}>
-                {workspacePath.split('/').pop()}
-              </span>
-            )}
+            <span className="text-[10px] text-muted-foreground truncate max-w-[80px]" title={workspacePath}>
+              {workspacePath.split('/').pop()}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleRefresh}
+              disabled={loading}
+              className="h-6 w-6"
+              title="Refresh files"
+            >
+              {loading ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <RefreshCw className="size-3" />
+              )}
+            </Button>
             <Button
               variant="ghost"
               size="sm"
-              onClick={workspaceFiles.length > 0 ? handleSyncToDisk : handleSelectFolder}
-              disabled={syncing || !currentThreadId}
+              onClick={handleSelectFolder}
+              disabled={loading || !currentThreadId}
               className="h-6 px-2 text-xs"
-              title={
-                workspaceFiles.length > 0 
-                  ? (workspacePath ? `Sync to ${workspacePath}` : 'Sync files to disk')
-                  : (workspacePath ? `Linked to ${workspacePath}` : 'Set sync folder')
-              }
+              title="Change workspace folder"
             >
-              {syncing ? (
-                <Loader2 className="size-3 animate-spin" />
-              ) : syncSuccess ? (
-                <Check className="size-3 text-status-nominal" />
-              ) : workspaceFiles.length > 0 ? (
-                <Download className="size-3" />
-              ) : (
-                <FolderSync className="size-3" />
-              )}
-              <span className="ml-1">
-                {workspaceFiles.length > 0 ? 'Sync' : (workspacePath ? 'Change' : 'Link')}
-              </span>
+              Change
             </Button>
           </div>
         </div>
@@ -288,12 +300,7 @@ export function FilesystemPanel() {
           {rootItems.length === 0 ? (
             <div className="flex flex-col items-center text-center text-sm text-muted-foreground py-8 px-4">
               <FolderOpen className="size-8 mb-2 opacity-50" />
-              <span>No workspace files</span>
-              <span className="text-xs mt-1">
-                {workspacePath 
-                  ? `Linked to ${workspacePath.split('/').pop()}`
-                  : 'Click "Link" to set a sync folder'}
-              </span>
+              <span>Empty workspace</span>
               <span className="text-xs mt-1 opacity-75">
                 Files will appear when the agent creates them
               </span>

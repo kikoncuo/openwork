@@ -47,13 +47,6 @@ interface CustomAPI {
     get: (threadId?: string) => Promise<string | null>
     set: (threadId: string | undefined, path: string | null) => Promise<string | null>
     select: (threadId?: string) => Promise<string | null>
-    syncToDisk: (threadId: string) => Promise<{
-      success: boolean
-      synced?: string[]
-      errors?: string[]
-      targetPath?: string
-      error?: string
-    }>
     loadFromDisk: (threadId: string) => Promise<{
       success: boolean
       files: Array<{
@@ -68,7 +61,6 @@ interface CustomAPI {
     readFile: (threadId: string, filePath: string) => Promise<{
       success: boolean
       content?: string
-      source?: 'virtual' | 'disk'
       size?: number
       modified_at?: string
       error?: string

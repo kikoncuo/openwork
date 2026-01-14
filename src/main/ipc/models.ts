@@ -3,7 +3,6 @@ import Store from 'electron-store'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import type { ModelConfig, Provider, ProviderId } from '../types'
-import { getCheckpointer } from '../agent/runtime'
 import { startWatching, stopWatching } from '../services/workspace-watcher'
 
 // Encrypted store for API keys
@@ -153,60 +152,6 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
     event.returnValue = app.getVersion()
   })
 
-  /**
-   * Flush virtual files from thread state to disk.
-   * Called when transitioning from StateBackend to FilesystemBackend.
-   */
-  async function flushVirtualFilesToDisk(
-    threadId: string,
-    targetPath: string
-  ): Promise<{ synced: string[]; errors: string[] }> {
-    const synced: string[] = []
-    const errors: string[] = []
-
-    try {
-      const checkpointer = await getCheckpointer()
-      const config = { configurable: { thread_id: threadId } }
-      const checkpoint = await checkpointer.getTuple(config)
-
-      if (!checkpoint?.checkpoint?.channel_values) {
-        return { synced, errors }
-      }
-
-      const state = checkpoint.checkpoint.channel_values as {
-        files?: Record<string, { content?: string[]; created_at?: string; modified_at?: string }>
-      }
-
-      if (!state.files || Object.keys(state.files).length === 0) {
-        return { synced, errors }
-      }
-
-      // Write each file to disk
-      for (const [filePath, fileData] of Object.entries(state.files)) {
-        try {
-          const relativePath = filePath.startsWith('/') ? filePath.slice(1) : filePath
-          const fullPath = path.join(targetPath, relativePath)
-
-          await fs.mkdir(path.dirname(fullPath), { recursive: true })
-
-          const content = Array.isArray(fileData.content)
-            ? fileData.content.join('\n')
-            : String(fileData.content || '')
-          await fs.writeFile(fullPath, content, 'utf-8')
-
-          synced.push(filePath)
-          console.log(`[Workspace] Flushed ${filePath} to disk`)
-        } catch (e) {
-          errors.push(`${filePath}: ${e instanceof Error ? e.message : 'Unknown error'}`)
-        }
-      }
-    } catch (e) {
-      console.error('[Workspace] Failed to flush virtual files:', e)
-    }
-
-    return { synced, errors }
-  }
-
   // Get workspace path for a thread (from thread metadata)
   ipcMain.handle('workspace:get', async (_event, threadId?: string) => {
     if (!threadId) {
@@ -224,12 +169,11 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
   })
 
   // Set workspace path for a thread (stores in thread metadata)
-  // When linking a folder for the first time, flushes virtual files to disk
   ipcMain.handle(
     'workspace:set',
     async (_event, { threadId, path: newPath }: { threadId?: string; path: string | null }) => {
       if (!threadId) {
-        // Fallback to global setting (no flush needed)
+        // Fallback to global setting
         if (newPath) {
           store.set('workspacePath', newPath)
         } else {
@@ -243,13 +187,6 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
       if (!thread) return null
 
       const metadata = thread.metadata ? JSON.parse(thread.metadata) : {}
-      const hadWorkspacePath = !!metadata.workspacePath
-
-      // If we're linking a folder for the first time, flush virtual files to disk
-      if (newPath && !hadWorkspacePath) {
-        await flushVirtualFilesToDisk(threadId, newPath)
-      }
-
       metadata.workspacePath = newPath
       updateThread(threadId, { metadata: JSON.stringify(metadata) })
 
@@ -265,12 +202,11 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
   )
 
   // Select workspace folder via dialog (for a specific thread)
-  // When linking a folder for the first time, flushes virtual files to disk
   ipcMain.handle('workspace:select', async (_event, threadId?: string) => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory', 'createDirectory'],
       title: 'Select Workspace Folder',
-      message: 'Choose a folder to sync agent files to'
+      message: 'Choose a folder for the agent to work in'
     })
 
     if (result.canceled || result.filePaths.length === 0) {
@@ -284,13 +220,6 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
       const thread = getThread(threadId)
       if (thread) {
         const metadata = thread.metadata ? JSON.parse(thread.metadata) : {}
-        const hadWorkspacePath = !!metadata.workspacePath
-
-        // If we're linking a folder for the first time, flush virtual files to disk
-        if (!hadWorkspacePath) {
-          await flushVirtualFilesToDisk(threadId, selectedPath)
-        }
-
         metadata.workspacePath = selectedPath
         updateThread(threadId, { metadata: JSON.stringify(metadata) })
 
@@ -298,99 +227,14 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
         startWatching(threadId, selectedPath)
       }
     } else {
-      // Fallback to global (no flush needed)
+      // Fallback to global
       store.set('workspacePath', selectedPath)
     }
 
     return selectedPath
   })
 
-  // Sync files from thread state to disk (on-demand)
-  ipcMain.handle('workspace:syncToDisk', async (_event, { threadId }: { threadId: string }) => {
-    const { getThread, updateThread } = await import('../db')
-
-    // Get workspace path from thread metadata first
-    const thread = getThread(threadId)
-    const metadata = thread?.metadata ? JSON.parse(thread.metadata) : {}
-    let targetPath = metadata.workspacePath as string | null
-
-    // If no path set for this thread, prompt for one
-    if (!targetPath) {
-      const result = await dialog.showOpenDialog({
-        properties: ['openDirectory', 'createDirectory'],
-        title: 'Select Folder to Sync Files',
-        message: 'Choose where to save the workspace files for this thread'
-      })
-
-      if (result.canceled || result.filePaths.length === 0) {
-        return { success: false, error: 'No folder selected' }
-      }
-
-      targetPath = result.filePaths[0]
-
-      // Save to thread metadata
-      metadata.workspacePath = targetPath
-      updateThread(threadId, { metadata: JSON.stringify(metadata) })
-    }
-
-    try {
-      // Get the current state from the checkpointer
-      const checkpointer = await getCheckpointer()
-      const config = { configurable: { thread_id: threadId } }
-      const checkpoint = await checkpointer.getTuple(config)
-
-      if (!checkpoint?.checkpoint?.channel_values) {
-        return { success: false, error: 'No checkpoint found for thread' }
-      }
-
-      const state = checkpoint.checkpoint.channel_values as {
-        files?: Record<string, { content?: string[]; created_at?: string; modified_at?: string }>
-      }
-
-      if (!state.files || Object.keys(state.files).length === 0) {
-        return { success: false, error: 'No files to sync' }
-      }
-
-      // Write each file to disk
-      const synced: string[] = []
-      const errors: string[] = []
-
-      for (const [filePath, fileData] of Object.entries(state.files)) {
-        try {
-          // Convert virtual path to disk path
-          const relativePath = filePath.startsWith('/') ? filePath.slice(1) : filePath
-          const fullPath = path.join(targetPath, relativePath)
-
-          // Ensure directory exists
-          await fs.mkdir(path.dirname(fullPath), { recursive: true })
-
-          // Write file content (join lines with newlines)
-          const content = Array.isArray(fileData.content)
-            ? fileData.content.join('\n')
-            : String(fileData.content || '')
-          await fs.writeFile(fullPath, content, 'utf-8')
-
-          synced.push(filePath)
-        } catch (e) {
-          errors.push(`${filePath}: ${e instanceof Error ? e.message : 'Unknown error'}`)
-        }
-      }
-
-      return {
-        success: true,
-        synced,
-        errors,
-        targetPath
-      }
-    } catch (e) {
-      return {
-        success: false,
-        error: e instanceof Error ? e.message : 'Unknown error'
-      }
-    }
-  })
-
-  // Load files from disk into the workspace view (read-only, doesn't modify agent state)
+  // Load files from disk into the workspace view
   ipcMain.handle('workspace:loadFromDisk', async (_event, { threadId }: { threadId: string }) => {
     const { getThread } = await import('../db')
 
@@ -461,66 +305,13 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
     }
   })
 
-  // Read a single file's contents - tries virtual state first, then disk
+  // Read a single file's contents from disk
   ipcMain.handle(
     'workspace:readFile',
     async (_event, { threadId, filePath }: { threadId: string; filePath: string }) => {
       const { getThread } = await import('../db')
 
-      // First, try to read from virtual state (checkpoint)
-      try {
-        const checkpointer = await getCheckpointer()
-        const config = { configurable: { thread_id: threadId } }
-        const checkpoint = await checkpointer.getTuple(config)
-
-        console.log('[workspace:readFile] Looking for file:', filePath, 'in thread:', threadId)
-        console.log('[workspace:readFile] Checkpoint exists:', !!checkpoint)
-
-        if (checkpoint?.checkpoint?.channel_values) {
-          const state = checkpoint.checkpoint.channel_values as {
-            files?: Record<
-              string,
-              { content?: string[]; created_at?: string; modified_at?: string }
-            >
-          }
-
-          // Log available files in checkpoint
-          const availableFiles = state.files ? Object.keys(state.files) : []
-          console.log('[workspace:readFile] Available files in checkpoint:', availableFiles)
-
-          // Normalize the path for lookup (try with and without leading slash)
-          const normalizedPath = filePath.startsWith('/') ? filePath : '/' + filePath
-          const altPath = filePath.startsWith('/') ? filePath.slice(1) : filePath
-
-          console.log('[workspace:readFile] Trying paths:', { normalizedPath, altPath, filePath })
-
-          const fileData =
-            state.files?.[normalizedPath] || state.files?.[altPath] || state.files?.[filePath]
-
-          if (fileData && fileData.content !== undefined) {
-            // Found in virtual state
-            const content = Array.isArray(fileData.content)
-              ? fileData.content.join('\n')
-              : String(fileData.content)
-
-            console.log('[workspace:readFile] Found file, content length:', content.length)
-            return {
-              success: true,
-              content,
-              source: 'virtual',
-              modified_at: fileData.modified_at
-            }
-          } else {
-            console.log('[workspace:readFile] File not found in state.files')
-          }
-        } else {
-          console.log('[workspace:readFile] No channel_values in checkpoint')
-        }
-      } catch (e) {
-        console.warn('[workspace:readFile] Failed to read from virtual state:', e)
-      }
-
-      // Fall back to reading from disk
+      // Get workspace path from thread metadata
       const thread = getThread(threadId)
       const metadata = thread?.metadata ? JSON.parse(thread.metadata) : {}
       const workspacePath = metadata.workspacePath as string | null
@@ -528,7 +319,7 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
       if (!workspacePath) {
         return {
           success: false,
-          error: 'File not found in virtual state and no workspace folder linked'
+          error: 'No workspace folder linked'
         }
       }
 
@@ -556,7 +347,6 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
         return {
           success: true,
           content,
-          source: 'disk',
           size: stat.size,
           modified_at: stat.mtime.toISOString()
         }

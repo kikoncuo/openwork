@@ -47,10 +47,19 @@ export function registerAgentHandlers(ipcMain: IpcMain): void {
       window.once('closed', onWindowClosed)
 
       try {
-        // Get workspace path from thread metadata
+        // Get workspace path from thread metadata - REQUIRED
         const thread = getThread(threadId)
         const metadata = thread?.metadata ? JSON.parse(thread.metadata) : {}
-        const workspacePath = metadata.workspacePath as string | null
+        const workspacePath = metadata.workspacePath as string | undefined
+
+        if (!workspacePath) {
+          window.webContents.send(channel, {
+            type: 'error',
+            error: 'WORKSPACE_REQUIRED',
+            message: 'Please select a workspace folder before sending messages.'
+          })
+          return
+        }
 
         const agent = await createAgentRuntime({ workspacePath })
         const humanMessage = new HumanMessage(message)
@@ -102,10 +111,14 @@ export function registerAgentHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(
     'agent:interrupt',
     async (_event, { threadId, decision }: { threadId: string; decision: HITLDecision }) => {
-      // Get workspace path from thread metadata
+      // Get workspace path from thread metadata - REQUIRED
       const thread = getThread(threadId)
       const metadata = thread?.metadata ? JSON.parse(thread.metadata) : {}
-      const workspacePath = metadata.workspacePath as string | null
+      const workspacePath = metadata.workspacePath as string | undefined
+
+      if (!workspacePath) {
+        throw new Error('Workspace path is required')
+      }
 
       const agent = await createAgentRuntime({ workspacePath })
       const config = { configurable: { thread_id: threadId } }

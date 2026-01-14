@@ -1,7 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import { createDeepAgent, StateBackend, FilesystemBackend } from 'deepagents'
-import type { BackendProtocol } from 'deepagents'
-import type { BaseStore } from '@langchain/langgraph-checkpoint'
+import { createDeepAgent, FilesystemBackend } from 'deepagents'
 import { app } from 'electron'
 import { join } from 'path'
 import { getDefaultModel, getApiKey } from '../ipc/models'
@@ -13,13 +11,6 @@ import type * as _lcTypes from 'langchain'
 import type * as _lcMessages from '@langchain/core/messages'
 import type * as _lcLanggraph from '@langchain/langgraph'
 import type * as _lcZodTypes from '@langchain/core/utils/types'
-
-// Local type definition (matches deepagents StateAndStore)
-interface StateAndStore {
-  state: unknown
-  store?: BaseStore
-  assistantId?: string
-}
 
 // Singleton checkpointer instance
 let checkpointer: SqlJsSaver | null = null
@@ -71,39 +62,23 @@ function getModelInstance(modelId?: string): ChatAnthropic | ChatOpenAI | string
 export interface CreateAgentRuntimeOptions {
   /** Model ID to use (defaults to configured default model) */
   modelId?: string
-  /** Workspace path - if set, uses FilesystemBackend; otherwise uses StateBackend */
-  workspacePath?: string | null
+  /** Workspace path - REQUIRED for agent to operate on files */
+  workspacePath: string
 }
 
 // Create agent runtime with configured model and checkpointer
 export type AgentRuntime = ReturnType<typeof createDeepAgent>
 
-/**
- * Create a backend factory that chooses between StateBackend and FilesystemBackend.
- *
- * - No workspacePath → StateBackend (virtual files in LangGraph state, isolated per thread)
- * - With workspacePath → FilesystemBackend (files on disk)
- */
-function createBackendFactory(workspacePath: string | null) {
-  return (stateAndStore: StateAndStore): BackendProtocol => {
-    if (workspacePath) {
-      console.log('[Runtime] Using FilesystemBackend at:', workspacePath)
-      return new FilesystemBackend({
-        rootDir: workspacePath,
-        virtualMode: true // Use virtual paths starting with /
-      })
-    } else {
-      console.log('[Runtime] Using StateBackend (virtual filesystem)')
-      return new StateBackend(stateAndStore)
-    }
-  }
-}
-
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-export async function createAgentRuntime(options: CreateAgentRuntimeOptions = {}) {
-  const { modelId, workspacePath = null } = options
+export async function createAgentRuntime(options: CreateAgentRuntimeOptions) {
+  const { modelId, workspacePath } = options
+
+  if (!workspacePath) {
+    throw new Error('Workspace path is required. Please select a workspace folder before running the agent.')
+  }
 
   console.log('[Runtime] Creating agent runtime...')
+  console.log('[Runtime] Workspace path:', workspacePath)
 
   const model = getModelInstance(modelId)
   console.log('[Runtime] Model instance created:', typeof model)
@@ -111,16 +86,18 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions = {}
   const checkpointer = await getCheckpointer()
   console.log('[Runtime] Checkpointer ready')
 
+  const backend = new FilesystemBackend({
+    rootDir: workspacePath,
+    virtualMode: true // Use virtual paths starting with /
+  })
+
   const agent = createDeepAgent({
     model,
     checkpointer,
-    backend: createBackendFactory(workspacePath)
+    backend
   })
 
-  console.log(
-    '[Runtime] Deep agent created with',
-    workspacePath ? `FilesystemBackend at ${workspacePath}` : 'StateBackend (virtual)'
-  )
+  console.log('[Runtime] Deep agent created with FilesystemBackend at:', workspacePath)
   return agent
 }
 

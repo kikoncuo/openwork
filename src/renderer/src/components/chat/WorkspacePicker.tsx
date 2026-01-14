@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { FolderSync, Check, ChevronDown, X } from 'lucide-react'
+import { Folder, Check, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Popover,
@@ -54,18 +54,6 @@ export function WorkspacePicker(): React.JSX.Element {
     }
   }
 
-  async function handleClearFolder(): Promise<void> {
-    if (!currentThreadId) return
-    try {
-      await window.api.workspace.set(currentThreadId, null)
-      setWorkspacePath(null)
-      setWorkspaceFiles([])
-      setOpen(false)
-    } catch (e) {
-      console.error('[WorkspacePicker] Clear folder error:', e)
-    }
-  }
-
   const folderName = workspacePath?.split('/').pop()
 
   return (
@@ -76,13 +64,13 @@ export function WorkspacePicker(): React.JSX.Element {
           size="sm"
           className={cn(
             'h-7 px-2 text-xs gap-1.5',
-            workspacePath ? 'text-foreground' : 'text-muted-foreground'
+            workspacePath ? 'text-foreground' : 'text-amber-500'
           )}
           disabled={!currentThreadId}
         >
-          <FolderSync className="size-3.5" />
+          <Folder className="size-3.5" />
           <span className="max-w-[120px] truncate">
-            {workspacePath ? folderName : 'Link folder'}
+            {workspacePath ? folderName : 'Select workspace'}
           </span>
           <ChevronDown className="size-3 opacity-50" />
         </Button>
@@ -102,32 +90,7 @@ export function WorkspacePicker(): React.JSX.Element {
                 </span>
               </div>
               <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Files created by the agent will be synced to this folder.
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="flex-1 h-8 text-xs"
-                  onClick={handleSelectFolder}
-                  disabled={loading}
-                >
-                  Change
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 px-2"
-                  onClick={handleClearFolder}
-                >
-                  <X className="size-3.5" />
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Link a folder to sync files created by the agent to your filesystem.
+                The agent will read and write files in this folder.
               </p>
               <Button
                 variant="outline"
@@ -136,7 +99,22 @@ export function WorkspacePicker(): React.JSX.Element {
                 onClick={handleSelectFolder}
                 disabled={loading}
               >
-                <FolderSync className="size-3.5 mr-1.5" />
+                Change Folder
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                Select a folder for the agent to work in. The agent will read and write files directly to this location.
+              </p>
+              <Button
+                variant="default"
+                size="sm"
+                className="w-full h-8 text-xs"
+                onClick={handleSelectFolder}
+                disabled={loading}
+              >
+                <Folder className="size-3.5 mr-1.5" />
                 Select Folder
               </Button>
             </div>

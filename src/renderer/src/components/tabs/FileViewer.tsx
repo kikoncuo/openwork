@@ -80,7 +80,6 @@ export function FileViewer({ filePath }: FileViewerProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null)
-  const [source, setSource] = useState<'virtual' | 'disk' | null>(null)
 
   // Get cached content or load it
   const content = fileContents[filePath]
@@ -94,7 +93,6 @@ export function FileViewer({ filePath }: FileViewerProps) {
   useEffect(() => {
     setError(null)
     setHighlightedHtml(null)
-    setSource(null)
   }, [filePath])
 
   // Load file content
@@ -117,7 +115,6 @@ export function FileViewer({ filePath }: FileViewerProps) {
         const result = await window.api.workspace.readFile(currentThreadId, filePath)
         if (result.success && result.content !== undefined) {
           setFileContents(filePath, result.content)
-          setSource(result.source || null)
         } else {
           setError(result.error || 'Failed to read file')
         }
@@ -212,12 +209,6 @@ export function FileViewer({ filePath }: FileViewerProps) {
         <span>{lineCount} lines</span>
         <span className="text-muted-foreground/50">•</span>
         <span className="text-muted-foreground/70">{language || 'plain text'}</span>
-        {source === 'virtual' && (
-          <>
-            <span className="text-muted-foreground/50">•</span>
-            <span className="text-status-warning/70">unsaved</span>
-          </>
-        )}
       </div>
 
       {/* File content with syntax highlighting */}

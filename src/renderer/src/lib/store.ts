@@ -242,12 +242,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
 
     // Load workspace path from thread metadata
-    let hasWorkspacePath = false
     try {
       const path = await window.api.workspace.get(threadId)
       if (path) {
         set({ workspacePath: path })
-        hasWorkspacePath = true
 
         // Load files from disk when workspace is linked
         const diskResult = await window.api.workspace.loadFromDisk(threadId)
@@ -338,31 +336,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           }))
 
           set({ todos })
-        }
-
-        // Extract files from virtual state (only if no workspace path linked)
-        if (!hasWorkspacePath) {
-          const filesData = (channelValues as { files?: Record<string, unknown> })?.files
-          if (filesData && typeof filesData === 'object') {
-            const files: FileInfo[] = Object.entries(filesData).map(([filePath, data]) => {
-              const fileData = data as {
-                content?: string[]
-                created_at?: string
-                modified_at?: string
-              }
-              // Calculate size from content
-              const content = Array.isArray(fileData.content) ? fileData.content.join('\n') : ''
-              return {
-                path: filePath,
-                name: filePath.split('/').pop() || filePath,
-                is_dir: false,
-                size: content.length,
-                modified_at: fileData.modified_at
-              }
-            })
-
-            set({ workspaceFiles: files })
-          }
         }
       }
     } catch (error) {

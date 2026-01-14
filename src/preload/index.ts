@@ -152,17 +152,6 @@ const api = {
     select: (threadId?: string): Promise<string | null> => {
       return ipcRenderer.invoke('workspace:select', threadId)
     },
-    syncToDisk: (
-      threadId: string
-    ): Promise<{
-      success: boolean
-      synced?: string[]
-      errors?: string[]
-      targetPath?: string
-      error?: string
-    }> => {
-      return ipcRenderer.invoke('workspace:syncToDisk', { threadId })
-    },
     loadFromDisk: (threadId: string): Promise<{
       success: boolean
       files: Array<{
@@ -179,7 +168,6 @@ const api = {
     readFile: (threadId: string, filePath: string): Promise<{
       success: boolean
       content?: string
-      source?: 'virtual' | 'disk'
       size?: number
       modified_at?: string
       error?: string

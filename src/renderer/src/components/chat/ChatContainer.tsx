@@ -69,6 +69,7 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     pendingApproval,
     todos,
     errorByThread,
+    workspacePath,
     setTodos,
     setWorkspaceFiles,
     setWorkspacePath,
@@ -373,6 +374,12 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     e.preventDefault()
     if (!input.trim() || stream.isLoading) return
 
+    // Check if workspace is selected
+    if (!workspacePath) {
+      setThreadError(threadId, 'Please select a workspace folder before sending messages.')
+      return
+    }
+
     // Clear any previous error when submitting a new message
     if (threadError) {
       clearThreadError(threadId)
@@ -444,7 +451,16 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
             {displayMessages.length === 0 && !stream.isLoading && (
               <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
                 <div className="text-section-header mb-2">NEW THREAD</div>
-                <div className="text-sm">Start a conversation with the agent</div>
+                {workspacePath ? (
+                  <div className="text-sm">Start a conversation with the agent</div>
+                ) : (
+                  <div className="text-sm text-center">
+                    <span className="text-amber-500">Select a workspace folder</span>
+                    <span className="block text-xs mt-1 opacity-75">
+                      The agent needs a workspace to create and modify files
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
