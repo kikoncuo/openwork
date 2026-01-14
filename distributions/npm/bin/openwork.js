@@ -27,7 +27,7 @@ function getBinaryPath() {
     process.exit(1)
   }
 
-  const pkgName = `@langchain-ai/openwork-${platformKey}`
+  const pkgName = `@langchain/openwork-${platformKey}`
 
   try {
     // The platform package exports the binary path

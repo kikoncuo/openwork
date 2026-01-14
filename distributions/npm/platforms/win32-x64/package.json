@@ -1,11 +1,18 @@
 {
-  "name": "@langchain-ai/openwork-win32-x64",
+  "name": "@langchain/openwork-win32-x64",
   "version": "0.0.0-development",
   "description": "openwork binary for Windows x64",
-  "os": ["win32"],
-  "cpu": ["x64"],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "main": "index.js",
-  "files": ["bin/", "index.js"],
+  "files": [
+    "bin/",
+    "index.js"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/langchain-ai/openwork.git"

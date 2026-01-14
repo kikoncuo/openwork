@@ -142,11 +142,11 @@ The npm package is published from `distributions/npm/`. Platform-specific binari
 
 | Platform | npm Package |
 |----------|-------------|
-| macOS (Apple Silicon) | `@langchain-ai/openwork-darwin-arm64` |
-| macOS (Intel) | `@langchain-ai/openwork-darwin-x64` |
-| Linux (x64) | `@langchain-ai/openwork-linux-x64` |
-| Linux (ARM64) | `@langchain-ai/openwork-linux-arm64` |
-| Windows (x64) | `@langchain-ai/openwork-win32-x64` |
+| macOS (Apple Silicon) | `@langchain/openwork-darwin-arm64` |
+| macOS (Intel) | `@langchain/openwork-darwin-x64` |
+| Linux (x64) | `@langchain/openwork-linux-x64` |
+| Linux (ARM64) | `@langchain/openwork-linux-arm64` |
+| Windows (x64) | `@langchain/openwork-win32-x64` |
 
 To publish a new release:
 1. Create a git tag: `git tag v0.2.0`

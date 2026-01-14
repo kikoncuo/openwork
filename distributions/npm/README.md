@@ -44,11 +44,11 @@ Or configure them in the app settings.
 
 | Platform | Package |
 |----------|---------|
-| macOS (Apple Silicon) | `@langchain-ai/openwork-darwin-arm64` |
-| macOS (Intel) | `@langchain-ai/openwork-darwin-x64` |
-| Linux (x64) | `@langchain-ai/openwork-linux-x64` |
-| Linux (ARM64) | `@langchain-ai/openwork-linux-arm64` |
-| Windows (x64) | `@langchain-ai/openwork-win32-x64` |
+| macOS (Apple Silicon) | `@langchain/openwork-darwin-arm64` |
+| macOS (Intel) | `@langchain/openwork-darwin-x64` |
+| Linux (x64) | `@langchain/openwork-linux-x64` |
+| Linux (ARM64) | `@langchain/openwork-linux-arm64` |
+| Windows (x64) | `@langchain/openwork-win32-x64` |
 
 ## Documentation
 

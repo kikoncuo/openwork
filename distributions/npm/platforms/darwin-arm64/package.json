@@ -1,5 +1,5 @@
 {
-  "name": "@langchain-ai/openwork-darwin-arm64",
+  "name": "@langchain/openwork-darwin-arm64",
   "version": "0.0.0-development",
   "description": "openwork binary for macOS ARM64 (Apple Silicon)",
   "os": [

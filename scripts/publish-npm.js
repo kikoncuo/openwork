@@ -22,9 +22,7 @@ const PLATFORMS_DIR = path.join(NPM_DIR, 'platforms')
 const RELEASE_DIR = path.join(ROOT_DIR, 'release')
 
 // Read shared platform config
-const platformsConfig = JSON.parse(
-  fs.readFileSync(path.join(__dirname, 'platforms.json'), 'utf8')
-)
+const platformsConfig = JSON.parse(fs.readFileSync(path.join(__dirname, 'platforms.json'), 'utf8'))
 
 function log(msg) {
   console.log(msg)
@@ -114,11 +112,7 @@ function publishPackage(pkgDir, pkgName) {
   } catch (err) {
     const output = err.stderr?.toString() || err.stdout?.toString() || ''
 
-    if (
-      /previously published|cannot publish over|already exists|EPUBLISHCONFLICT/i.test(
-        output
-      )
-    ) {
+    if (/previously published|cannot publish over|already exists|EPUBLISHCONFLICT/i.test(output)) {
       return { success: true, skipped: true }
     }
 
@@ -157,7 +151,7 @@ function publishPlatformPackage(version, platformId, config) {
   const releaseSubDir = config.electronBuilder.releaseDir
   const appBundle = config.electronBuilder.appBundle
 
-  log(`\n📦 Publishing @langchain-ai/openwork-${npmKey}...`)
+  log(`\n📦 Publishing @langchain/openwork-${npmKey}...`)
 
   // Find the electron-builder output
   const sourceDir = path.join(RELEASE_DIR, releaseSubDir)
@@ -237,17 +231,17 @@ function publishPlatformPackage(version, platformId, config) {
   writePackageJson(packageJsonPath, pkg)
 
   // Publish
-  const result = publishPackage(platformDir, `@langchain-ai/openwork-${npmKey}`)
+  const result = publishPackage(platformDir, `@langchain/openwork-${npmKey}`)
 
   if (result.success) {
     if (result.skipped) {
-      log(`⚠️  @langchain-ai/openwork-${npmKey}@${version} already exists, skipped`)
+      log(`⚠️  @langchain/openwork-${npmKey}@${version} already exists, skipped`)
     } else {
-      success(`Published @langchain-ai/openwork-${npmKey}@${version}`)
+      success(`Published @langchain/openwork-${npmKey}@${version}`)
     }
     return true
   } else {
-    error(`Failed to publish @langchain-ai/openwork-${npmKey}`)
+    error(`Failed to publish @langchain/openwork-${npmKey}`)
     if (result.error) {
       console.error(result.error)
     }
@@ -278,7 +272,7 @@ function publishMainPackage(version) {
     pkg.optionalDependencies = {}
   }
   for (const config of Object.values(platformsConfig.platforms)) {
-    pkg.optionalDependencies[`@langchain-ai/openwork-${config.npm.key}`] = version
+    pkg.optionalDependencies[`@langchain/openwork-${config.npm.key}`] = version
   }
 
   writePackageJson(packageJsonPath, pkg)

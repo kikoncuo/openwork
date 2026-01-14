@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 # Ensure only one release runs at a time
 concurrency:
@@ -43,6 +43,18 @@ jobs:
           fi
           echo "✅ Version format valid: $VERSION"
 
+      - name: Validate secrets
+        run: |
+          missing=()
+          [ -z "$NPM_TOKEN" ] && missing+=("NPM_TOKEN")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+          echo "✅ All required secrets are configured"
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   # ==========================================================================
   # Job 2: Build Electron apps for each platform
   # ==========================================================================
@@ -78,10 +90,10 @@ jobs:
         uses: pnpm/action-setup@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          cache: 'pnpm'
+          node-version: "22"
+          cache: "pnpm"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -121,10 +133,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -204,11 +216,11 @@ jobs:
 
             | Platform | npm Package | Direct Download |
             |----------|-------------|-----------------|
-            | macOS (Apple Silicon) | `@langchain-ai/openwork-darwin-arm64` | `.dmg` |
-            | macOS (Intel) | `@langchain-ai/openwork-darwin-x64` | `.dmg` |
-            | Linux (x64) | `@langchain-ai/openwork-linux-x64` | `.AppImage`, `.deb` |
-            | Linux (ARM64) | `@langchain-ai/openwork-linux-arm64` | `.AppImage`, `.deb` |
-            | Windows (x64) | `@langchain-ai/openwork-win32-x64` | `.exe` |
+            | macOS (Apple Silicon) | `@langchain/openwork-darwin-arm64` | `.dmg` |
+            | macOS (Intel) | `@langchain/openwork-darwin-x64` | `.dmg` |
+            | Linux (x64) | `@langchain/openwork-linux-x64` | `.AppImage`, `.deb` |
+            | Linux (ARM64) | `@langchain/openwork-linux-arm64` | `.AppImage`, `.deb` |
+            | Windows (x64) | `@langchain/openwork-win32-x64` | `.exe` |
 
             ### Links
 
