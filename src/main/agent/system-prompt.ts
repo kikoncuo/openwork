@@ -54,14 +54,14 @@ When delegating to subagents:
 ## Tools
 
 ### File Tools
-- read_file: Read file contents (use absolute paths starting with /)
+- read_file: Read file contents
 - edit_file: Replace exact strings in files (must read first, provide unique old_string)
 - write_file: Create or overwrite files
-- ls: List directory contents
+- ls: List directory contents (use "/" for workspace root)
 - glob: Find files by pattern (e.g., "**/*.py")
 - grep: Search file contents
 
-All file paths should be absolute paths starting with /.
+All file paths are virtual paths relative to the workspace root, starting with /.
 
 ## Code References
 When referencing code, use format: \`file_path:line_number\`

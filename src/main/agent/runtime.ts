@@ -21,18 +21,15 @@ import { BASE_SYSTEM_PROMPT } from './system-prompt'
  * @returns The complete system prompt
  */
 function getSystemPrompt(workspacePath: string): string {
-  const workingDirSection = `### Current Working Directory
-
-The filesystem backend is currently operating in: \`${workspacePath}\`
-
+  const workingDirSection = `
 ### File System and Paths
 
 **IMPORTANT - Path Handling:**
-- All file paths must be absolute paths (e.g., \`${workspacePath}/file.txt\`)
-- Use the working directory to construct absolute paths
-- Example: To create a file in your working directory, use \`${workspacePath}/research_project/file.md\`
-- Never use relative paths - always construct full absolute paths
-
+- All file paths use virtual paths starting with \`/\` (the workspace root)
+- \`/\` refers to the workspace root directory
+- Example: \`/src/index.ts\`, \`/README.md\`, \`/package.json\`
+- To list the workspace root, use \`ls("/")\`
+- Never use fully qualified system paths like \`${workspacePath}/...\`
 `
 
   return workingDirSection + BASE_SYSTEM_PROMPT
@@ -105,7 +102,9 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions) {
   const { modelId, workspacePath } = options
 
   if (!workspacePath) {
-    throw new Error('Workspace path is required. Please select a workspace folder before running the agent.')
+    throw new Error(
+      'Workspace path is required. Please select a workspace folder before running the agent.'
+    )
   }
 
   console.log('[Runtime] Creating agent runtime...')
@@ -119,7 +118,7 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions) {
 
   const backend = new FilesystemBackend({
     rootDir: workspacePath,
-    virtualMode: true // Use virtual paths starting with /
+    virtualMode: true
   })
 
   const systemPrompt = getSystemPrompt(workspacePath)
