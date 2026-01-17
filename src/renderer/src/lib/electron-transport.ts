@@ -92,16 +92,12 @@ export class ElectronIPCTransport implements UseStreamTransport {
   // Track completed tool calls by name for HITL matching
   private completedToolCallsByName: Map<string, CompletedToolCall[]> = new Map()
 
-  // Track latest token usage for context window monitoring
-  private latestUsageMetadata: UsageMetadata | null = null
-
   async stream(payload: StreamPayload): Promise<AsyncGenerator<StreamEvent>> {
     // Reset state for new stream
     this.currentMessageId = null
     this.activeSubagents.clear()
     this.accumulatedToolCalls.clear()
     this.completedToolCallsByName.clear()
-    this.latestUsageMetadata = null
     // Extract thread ID from config
     const threadId = payload.config?.configurable?.thread_id
     if (!threadId) {
@@ -476,7 +472,6 @@ export class ElectronIPCTransport implements UseStreamTransport {
 
           // Only emit if we have actual token counts (not on every chunk)
           if (usageMetadata.input_tokens !== undefined && usageMetadata.input_tokens > 0) {
-            this.latestUsageMetadata = usageMetadata
             events.push({
               event: 'custom',
               data: {
