@@ -203,14 +203,34 @@ MCP server configurations are stored in:
 - **Types**: `src/main/types/mcp.ts`
 - **Storage**: `src/main/storage.ts` (MCP CRUD functions)
 - **IPC**: `src/main/ipc/mcp.ts`
-- **Runtime**: `src/main/agent/runtime.ts` (loads and configures MCP servers)
+- **Runtime**: `src/main/agent/runtime.ts` (MCP integration and model wrapper)
 - **UI**: `src/renderer/src/components/settings/MCPServersSection.tsx`
 - **Preload**: `src/preload/index.ts` and `index.d.ts` (window.api.mcp interface)
-- **Tests**: `test-mcp-e2e.js`, `test-langchain-mcp.mjs`
+- **Tests**: `test-mcp-e2e.js`, `test-langchain-mcp.mjs`, `test-mcp-runtime-integration.mjs`
+
+### Implementation Details
+
+**Anthropic Integration**:
+- Uses `AnthropicMCPWrapper` class that extends `ChatAnthropic`
+- Wrapper automatically injects `mcp_servers` into all `invoke()` and `stream()` calls
+- MCP toolsets created with `tools.mcpToolset_20251120()`
+- Tool filtering via `defaultConfig` and `configs` parameters
+
+**OpenAI Integration**:
+- Direct tool creation with `tools.mcp()`
+- Server URL embedded in tool configuration
+- Interrupt control via `requireApproval` parameter ('always' | 'never')
+
+**Provider Detection**:
+- Automatic detection from model ID
+- Creates provider-specific MCP tools
+- Falls back gracefully for unsupported providers
 
 ### Current Status
 
-⚠️ **Integration Pending**: The infrastructure is complete (storage, UI, IPC), but full MCP execution requires `deepagents` library support for passing MCP tools to model invocations. See `MCP_MULTI_PROVIDER_TEST_REPORT.md` for integration roadmap.
+✅ **Integration Complete**: MCP server support is fully implemented for Anthropic and OpenAI models. Configure MCP servers in Settings → MCP Servers, and they will be automatically loaded when creating agents.
+
+See `MCP_MULTI_PROVIDER_TEST_REPORT.md` and `MCP_INTEGRATION_PROPOSALS.md` for implementation details and testing results.
 
 ## Common Tasks
 
