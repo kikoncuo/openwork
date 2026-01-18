@@ -142,7 +142,19 @@ npm run typecheck # Type check TypeScript
 
 ## MCP Server Integration
 
-**NEW:** openwork now supports MCP (Model Context Protocol) servers for extending agent capabilities.
+**NEW:** openwork now supports MCP (Model Context Protocol) servers for extending agent capabilities across multiple AI providers.
+
+### Provider Support
+
+MCP integration is available through LangChain's native tools:
+
+| Provider | MCP Support | LangChain Function | Status |
+|----------|-------------|-------------------|--------|
+| **Anthropic** | ✅ Yes | `tools.mcpToolset_20251120()` | Fully Tested |
+| **OpenAI** | ✅ Yes | `tools.mcp()` | Fully Tested |
+| **Google** | ❌ No | N/A | Not Available |
+
+**Test Results**: 12/12 tests passed verifying multi-provider MCP support. See `MCP_MULTI_PROVIDER_TEST_REPORT.md` for details.
 
 ### MCP Architecture
 - **Configuration UI**: `src/renderer/src/components/settings/MCPServersSection.tsx`
@@ -169,6 +181,18 @@ npm run typecheck # Type check TypeScript
 - **Per-Tool Override**: Configure individual tools in `toolConfigs`
 - Integrates with existing HITL (Human-in-the-Loop) system
 
+### Provider-Specific Differences
+
+**Anthropic**:
+- Uses `tools.mcpToolset_20251120()` for tool creation
+- Requires `mcp_servers` array in model invoke
+- Interrupt control via external HITL system
+
+**OpenAI**:
+- Uses `tools.mcp()` with built-in `requireApproval` parameter
+- Supports fine-grained per-tool approval configuration
+- Server URL embedded in tool configuration
+
 ### Storage Location
 MCP server configurations are stored in:
 ```
@@ -182,6 +206,11 @@ MCP server configurations are stored in:
 - **Runtime**: `src/main/agent/runtime.ts` (loads and configures MCP servers)
 - **UI**: `src/renderer/src/components/settings/MCPServersSection.tsx`
 - **Preload**: `src/preload/index.ts` and `index.d.ts` (window.api.mcp interface)
+- **Tests**: `test-mcp-e2e.js`, `test-langchain-mcp.mjs`
+
+### Current Status
+
+⚠️ **Integration Pending**: The infrastructure is complete (storage, UI, IPC), but full MCP execution requires `deepagents` library support for passing MCP tools to model invocations. See `MCP_MULTI_PROVIDER_TEST_REPORT.md` for integration roadmap.
 
 ## Common Tasks
 
