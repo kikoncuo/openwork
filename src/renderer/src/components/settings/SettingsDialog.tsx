@@ -10,6 +10,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
+import { MCPServersSection } from './MCPServersSection'
 
 interface SettingsDialogProps {
   open: boolean
@@ -201,6 +202,10 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             </div>
           )}
         </div>
+
+        <Separator />
+
+        <MCPServersSection />
 
         <Separator />
 

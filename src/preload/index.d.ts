@@ -1,4 +1,4 @@
-import type { Thread, ModelConfig, StreamEvent, HITLDecision } from '../main/types'
+import type { Thread, ModelConfig, StreamEvent, HITLDecision, MCPServerConfig, MCPServerInput } from '../main/types'
 
 interface ElectronAPI {
   ipcRenderer: {
@@ -85,6 +85,13 @@ interface CustomAPI {
     onFilesChanged: (
       callback: (data: { threadId: string; workspacePath: string }) => void
     ) => () => void
+  }
+  mcp: {
+    list: () => Promise<MCPServerConfig[]>
+    get: (serverId: string) => Promise<MCPServerConfig | null>
+    create: (input: MCPServerInput) => Promise<MCPServerConfig>
+    update: (serverId: string, updates: Partial<MCPServerInput>) => Promise<MCPServerConfig | null>
+    delete: (serverId: string) => Promise<boolean>
   }
 }
 

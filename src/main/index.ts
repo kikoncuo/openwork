@@ -3,6 +3,7 @@ import { join } from 'path'
 import { registerAgentHandlers } from './ipc/agent'
 import { registerThreadHandlers } from './ipc/threads'
 import { registerModelHandlers } from './ipc/models'
+import { registerMCPHandlers } from './ipc/mcp'
 import { initializeDatabase } from './db'
 
 // Suppress expected errors from LangChain stream handlers when streams are aborted
@@ -121,6 +122,7 @@ app.whenReady().then(async () => {
   registerAgentHandlers(ipcMain)
   registerThreadHandlers(ipcMain)
   registerModelHandlers(ipcMain)
+  registerMCPHandlers(ipcMain)
 
   createWindow()
 

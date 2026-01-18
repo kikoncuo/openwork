@@ -1,9 +1,11 @@
 import { homedir } from 'os'
 import { join } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
+import type { MCPServerConfig, MCPServerInput } from './types/mcp'
 
 const OPENWORK_DIR = join(homedir(), '.openwork')
 const ENV_FILE = join(OPENWORK_DIR, '.env')
+const MCP_SERVERS_FILE = join(OPENWORK_DIR, 'mcp-servers.json')
 
 // Environment variable names for each provider
 const ENV_VAR_NAMES: Record<string, string> = {
@@ -119,4 +121,97 @@ export function deleteApiKey(provider: string): void {
 
 export function hasApiKey(provider: string): boolean {
   return !!getApiKey(provider)
+}
+
+// MCP Server management
+function getMCPServersFilePath(): string {
+  return MCP_SERVERS_FILE
+}
+
+function readMCPServersFile(): MCPServerConfig[] {
+  const path = getMCPServersFilePath()
+  if (!existsSync(path)) return []
+
+  try {
+    const content = readFileSync(path, 'utf-8')
+    return JSON.parse(content) as MCPServerConfig[]
+  } catch (error) {
+    console.error('[Storage] Failed to read MCP servers file:', error)
+    return []
+  }
+}
+
+function writeMCPServersFile(servers: MCPServerConfig[]): void {
+  getOpenworkDir() // ensure dir exists
+  const path = getMCPServersFilePath()
+  writeFileSync(path, JSON.stringify(servers, null, 2))
+}
+
+export function listMCPServers(): MCPServerConfig[] {
+  return readMCPServersFile()
+}
+
+export function getMCPServer(id: string): MCPServerConfig | null {
+  const servers = readMCPServersFile()
+  return servers.find((s) => s.id === id) || null
+}
+
+export function createMCPServer(input: MCPServerInput): MCPServerConfig {
+  const servers = readMCPServersFile()
+
+  // Generate unique ID
+  const id = `mcp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+
+  const now = new Date().toISOString()
+  const server: MCPServerConfig = {
+    id,
+    name: input.name,
+    type: input.type,
+    url: input.url,
+    authToken: input.authToken,
+    command: input.command,
+    args: input.args,
+    env: input.env,
+    enabled: input.enabled ?? true,
+    toolConfigs: input.toolConfigs || {},
+    defaultRequireInterrupt: input.defaultRequireInterrupt ?? true,
+    createdAt: now,
+    updatedAt: now
+  }
+
+  servers.push(server)
+  writeMCPServersFile(servers)
+
+  return server
+}
+
+export function updateMCPServer(id: string, updates: Partial<MCPServerInput>): MCPServerConfig | null {
+  const servers = readMCPServersFile()
+  const index = servers.findIndex((s) => s.id === id)
+
+  if (index === -1) return null
+
+  const now = new Date().toISOString()
+  servers[index] = {
+    ...servers[index],
+    ...updates,
+    updatedAt: now
+  }
+
+  writeMCPServersFile(servers)
+  return servers[index]
+}
+
+export function deleteMCPServer(id: string): boolean {
+  const servers = readMCPServersFile()
+  const filtered = servers.filter((s) => s.id !== id)
+
+  if (filtered.length === servers.length) return false
+
+  writeMCPServersFile(filtered)
+  return true
+}
+
+export function getEnabledMCPServers(): MCPServerConfig[] {
+  return readMCPServersFile().filter((s) => s.enabled)
 }

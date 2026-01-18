@@ -129,3 +129,6 @@ export interface GrepMatch {
   line: number
   text: string
 }
+
+// MCP Server types
+export * from './types/mcp'

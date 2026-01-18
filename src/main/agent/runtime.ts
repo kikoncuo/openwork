@@ -1,12 +1,13 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { createDeepAgent } from 'deepagents'
 import { getDefaultModel } from '../ipc/models'
-import { getApiKey, getThreadCheckpointPath } from '../storage'
+import { getApiKey, getThreadCheckpointPath, getEnabledMCPServers } from '../storage'
 import { ChatAnthropic } from '@langchain/anthropic'
 import { ChatOpenAI } from '@langchain/openai'
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai'
 import { SqlJsSaver } from '../checkpointer/sqljs-saver'
 import { LocalSandbox } from './local-sandbox'
+import type { MCPServerConfig } from '../types/mcp'
 
 import type * as _lcTypes from 'langchain'
 import type * as _lcMessages from '@langchain/core/messages'
@@ -58,8 +59,33 @@ export async function closeCheckpointer(threadId: string): Promise<void> {
   }
 }
 
+// Convert MCP server config to Anthropic API format
+function mcpServerToAnthropicFormat(server: MCPServerConfig): Record<string, unknown> {
+  const config: Record<string, unknown> = {
+    type: server.type,
+    name: server.id
+  }
+
+  if (server.type === 'url' && server.url) {
+    config.url = server.url
+    if (server.authToken) {
+      config.authorization_token = server.authToken
+    }
+  } else if (server.type === 'stdio' && server.command) {
+    config.command = server.command
+    if (server.args) {
+      config.args = server.args
+    }
+    if (server.env) {
+      config.env = server.env
+    }
+  }
+
+  return config
+}
+
 // Get the appropriate model instance based on configuration
-function getModelInstance(modelId?: string): ChatAnthropic | ChatOpenAI | ChatGoogleGenerativeAI | string {
+function getModelInstance(modelId?: string, mcpServers?: MCPServerConfig[]): ChatAnthropic | ChatOpenAI | ChatGoogleGenerativeAI | string {
   const model = modelId || getDefaultModel()
   console.log('[Runtime] Using model:', model)
 
@@ -70,10 +96,22 @@ function getModelInstance(modelId?: string): ChatAnthropic | ChatOpenAI | ChatGo
     if (!apiKey) {
       throw new Error('Anthropic API key not configured')
     }
-    return new ChatAnthropic({
+
+    const config: ConstructorParameters<typeof ChatAnthropic>[0] = {
       model,
       anthropicApiKey: apiKey
-    })
+    }
+
+    // Add MCP servers for Anthropic models
+    if (mcpServers && mcpServers.length > 0) {
+      console.log('[Runtime] Adding MCP servers:', mcpServers.map((s) => s.name).join(', '))
+      // Note: MCP integration requires passing mcp_servers in model invoke calls
+      // This will be handled in the deepagents library or via model configuration
+      // For now, we store the config for later use
+      ;(config as Record<string, unknown>).mcpServers = mcpServers.map(mcpServerToAnthropicFormat)
+    }
+
+    return new ChatAnthropic(config)
   } else if (
     model.startsWith('gpt') ||
     model.startsWith('o1') ||
@@ -135,7 +173,13 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions) {
   console.log('[Runtime] Thread ID:', threadId)
   console.log('[Runtime] Workspace path:', workspacePath)
 
-  const model = getModelInstance(modelId)
+  // Load enabled MCP servers
+  const mcpServers = getEnabledMCPServers()
+  if (mcpServers.length > 0) {
+    console.log('[Runtime] Enabled MCP servers:', mcpServers.map((s) => s.name).join(', '))
+  }
+
+  const model = getModelInstance(modelId, mcpServers)
   console.log('[Runtime] Model instance created:', typeof model)
 
   const checkpointer = await getCheckpointer(threadId)
@@ -162,6 +206,25 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions) {
 
 The workspace root is: ${workspacePath}`
 
+  // Build interrupt configuration
+  const interruptConfig: Record<string, boolean> = { execute: true }
+
+  // Add MCP tools that require interrupts
+  for (const server of mcpServers) {
+    if (server.defaultRequireInterrupt) {
+      // All tools from this server require approval
+      interruptConfig[`mcp:${server.id}`] = true
+    }
+    // Individual tool configs can override
+    if (server.toolConfigs) {
+      for (const [toolName, toolConfig] of Object.entries(server.toolConfigs)) {
+        if (toolConfig.requireInterrupt) {
+          interruptConfig[`mcp:${server.id}:${toolName}`] = true
+        }
+      }
+    }
+  }
+
   const agent = createDeepAgent({
     model,
     checkpointer,
@@ -169,11 +232,14 @@ The workspace root is: ${workspacePath}`
     systemPrompt,
     // Custom filesystem prompt for absolute paths (requires deepagents update)
     filesystemSystemPrompt,
-    // Require human approval for all shell commands
-    interruptOn: { execute: true }
+    // Require human approval for shell commands and configured MCP tools
+    interruptOn: interruptConfig
   } as Parameters<typeof createDeepAgent>[0])
 
   console.log('[Runtime] Deep agent created with LocalSandbox at:', workspacePath)
+  if (mcpServers.length > 0) {
+    console.log('[Runtime] MCP servers configured:', mcpServers.length)
+  }
   return agent
 }
 

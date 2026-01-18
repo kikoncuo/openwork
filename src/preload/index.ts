@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Thread, ModelConfig, Provider, StreamEvent, HITLDecision } from '../main/types'
+import type { Thread, ModelConfig, Provider, StreamEvent, HITLDecision, MCPServerConfig, MCPServerInput } from '../main/types'
 
 // Simple electron API - replaces @electron-toolkit/preload
 const electronAPI = {
@@ -203,6 +203,23 @@ const api = {
       return () => {
         ipcRenderer.removeListener('workspace:files-changed', handler)
       }
+    }
+  },
+  mcp: {
+    list: (): Promise<MCPServerConfig[]> => {
+      return ipcRenderer.invoke('mcp:list')
+    },
+    get: (serverId: string): Promise<MCPServerConfig | null> => {
+      return ipcRenderer.invoke('mcp:get', serverId)
+    },
+    create: (input: MCPServerInput): Promise<MCPServerConfig> => {
+      return ipcRenderer.invoke('mcp:create', input)
+    },
+    update: (serverId: string, updates: Partial<MCPServerInput>): Promise<MCPServerConfig | null> => {
+      return ipcRenderer.invoke('mcp:update', { serverId, updates })
+    },
+    delete: (serverId: string): Promise<boolean> => {
+      return ipcRenderer.invoke('mcp:delete', serverId)
     }
   }
 }
