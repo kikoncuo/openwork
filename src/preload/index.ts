@@ -111,8 +111,8 @@ const api = {
     get: (threadId: string): Promise<Thread | null> => {
       return ipcRenderer.invoke('threads:get', threadId)
     },
-    create: (metadata?: Record<string, unknown>): Promise<Thread> => {
-      return ipcRenderer.invoke('threads:create', metadata)
+    create: (metadata?: Record<string, unknown>, agentId?: string): Promise<Thread> => {
+      return ipcRenderer.invoke('threads:create', metadata, agentId)
     },
     update: (threadId: string, updates: Partial<Thread>): Promise<Thread> => {
       return ipcRenderer.invoke('threads:update', { threadId, updates })
@@ -203,6 +203,223 @@ const api = {
       return () => {
         ipcRenderer.removeListener('workspace:files-changed', handler)
       }
+    }
+  },
+  mcp: {
+    list: (): Promise<Array<{
+      id: string
+      name: string
+      command: string
+      args: string[]
+      enabled: boolean
+      env?: Record<string, string>
+    }>> => {
+      return ipcRenderer.invoke('mcp:list')
+    },
+    save: (servers: Array<{
+      id: string
+      name: string
+      command: string
+      args: string[]
+      enabled: boolean
+      env?: Record<string, string>
+    }>): Promise<void> => {
+      return ipcRenderer.invoke('mcp:save', servers)
+    },
+    add: (server: {
+      id: string
+      name: string
+      command: string
+      args: string[]
+      enabled: boolean
+      env?: Record<string, string>
+    }): Promise<void> => {
+      return ipcRenderer.invoke('mcp:add', server)
+    },
+    remove: (serverId: string): Promise<void> => {
+      return ipcRenderer.invoke('mcp:remove', serverId)
+    },
+    toggle: (serverId: string): Promise<void> => {
+      return ipcRenderer.invoke('mcp:toggle', serverId)
+    },
+    testConnection: (server: {
+      name: string
+      command: string
+      args: string[]
+      env?: Record<string, string>
+    }): Promise<{
+      success: boolean
+      error?: string
+      tools: Array<{ name: string; description: string }>
+    }> => {
+      return ipcRenderer.invoke('mcp:testConnection', server)
+    }
+  },
+  tools: {
+    getConfigs: (): Promise<Array<{ id: string; enabled: boolean }>> => {
+      return ipcRenderer.invoke('tools:getConfigs')
+    },
+    saveConfigs: (configs: Array<{ id: string; enabled: boolean }>): Promise<void> => {
+      return ipcRenderer.invoke('tools:saveConfigs', configs)
+    }
+  },
+  prompt: {
+    getBase: (): Promise<string> => {
+      return ipcRenderer.invoke('prompt:getBase')
+    },
+    getCustom: (): Promise<string | null> => {
+      return ipcRenderer.invoke('prompt:getCustom')
+    },
+    setCustom: (prompt: string | null): Promise<void> => {
+      return ipcRenderer.invoke('prompt:setCustom', prompt)
+    }
+  },
+  insights: {
+    list: (): Promise<Array<{
+      id: string
+      content: string
+      source: 'tool_feedback' | 'user_feedback' | 'auto_learned'
+      createdAt: string
+      enabled: boolean
+    }>> => {
+      return ipcRenderer.invoke('insights:list')
+    },
+    add: (content: string, source: 'tool_feedback' | 'user_feedback' | 'auto_learned'): Promise<{
+      id: string
+      content: string
+      source: string
+      createdAt: string
+      enabled: boolean
+    }> => {
+      return ipcRenderer.invoke('insights:add', { content, source })
+    },
+    remove: (id: string): Promise<void> => {
+      return ipcRenderer.invoke('insights:remove', id)
+    },
+    toggle: (id: string): Promise<void> => {
+      return ipcRenderer.invoke('insights:toggle', id)
+    },
+    save: (insights: Array<{
+      id: string
+      content: string
+      source: string
+      createdAt: string
+      enabled: boolean
+    }>): Promise<void> => {
+      return ipcRenderer.invoke('insights:save', insights)
+    }
+  },
+  agents: {
+    list: (): Promise<Array<{
+      agent_id: string
+      name: string
+      color: string
+      icon: string
+      model_default: string
+      is_default: number
+      created_at: number
+      updated_at: number
+    }>> => {
+      return ipcRenderer.invoke('agents:list')
+    },
+    get: (agentId: string): Promise<{
+      agent_id: string
+      name: string
+      color: string
+      icon: string
+      model_default: string
+      is_default: number
+      created_at: number
+      updated_at: number
+    } | null> => {
+      return ipcRenderer.invoke('agents:get', agentId)
+    },
+    getDefault: (): Promise<{
+      agent_id: string
+      name: string
+      color: string
+      icon: string
+      model_default: string
+      is_default: number
+      created_at: number
+      updated_at: number
+    } | null> => {
+      return ipcRenderer.invoke('agents:getDefault')
+    },
+    create: (input: {
+      name: string
+      color?: string
+      icon?: string
+      model_default?: string
+    }): Promise<{
+      agent_id: string
+      name: string
+      color: string
+      icon: string
+      model_default: string
+      is_default: number
+      created_at: number
+      updated_at: number
+    }> => {
+      return ipcRenderer.invoke('agents:create', input)
+    },
+    update: (agentId: string, updates: {
+      name?: string
+      color?: string
+      icon?: string
+      model_default?: string
+    }): Promise<{
+      agent_id: string
+      name: string
+      color: string
+      icon: string
+      model_default: string
+      is_default: number
+      created_at: number
+      updated_at: number
+    } | null> => {
+      return ipcRenderer.invoke('agents:update', agentId, updates)
+    },
+    delete: (agentId: string): Promise<{
+      success: boolean
+      error?: string
+      reassignedThreads?: number
+    }> => {
+      return ipcRenderer.invoke('agents:delete', agentId)
+    },
+    getThreadCount: (agentId: string): Promise<number> => {
+      return ipcRenderer.invoke('agents:getThreadCount', agentId)
+    },
+    getConfig: (agentId: string): Promise<{
+      agent_id: string
+      tool_configs: string | null
+      mcp_servers: string | null
+      custom_prompt: string | null
+      learned_insights: string | null
+      updated_at: number
+    } | null> => {
+      return ipcRenderer.invoke('agents:getConfig', agentId)
+    },
+    updateConfig: (agentId: string, updates: {
+      tool_configs?: unknown[]
+      mcp_servers?: unknown[]
+      custom_prompt?: string | null
+      learned_insights?: unknown[]
+    }): Promise<{
+      agent_id: string
+      tool_configs: string | null
+      mcp_servers: string | null
+      custom_prompt: string | null
+      learned_insights: string | null
+      updated_at: number
+    } | null> => {
+      return ipcRenderer.invoke('agents:updateConfig', agentId, updates)
+    },
+    getIcons: (): Promise<string[]> => {
+      return ipcRenderer.invoke('agents:getIcons')
+    },
+    getColors: (): Promise<string[]> => {
+      return ipcRenderer.invoke('agents:getColors')
     }
   }
 }

@@ -1,12 +1,17 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { createDeepAgent } from 'deepagents'
-import { getDefaultModel } from '../ipc/models'
-import { getApiKey, getThreadCheckpointPath } from '../storage'
+import { getDefaultModel, getEnabledMcpServers } from '../ipc/models'
+import { getApiKey, getThreadCheckpointPath, getCustomPrompt, getLearnedInsights, addLearnedInsight } from '../storage'
+import { getAgent, getAgentConfig, updateAgentConfig } from '../db/agents'
+import { getThread } from '../db'
 import { ChatAnthropic } from '@langchain/anthropic'
 import { ChatOpenAI } from '@langchain/openai'
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai'
 import { SqlJsSaver } from '../checkpointer/sqljs-saver'
 import { LocalSandbox } from './local-sandbox'
+import { MultiServerMCPClient } from '@langchain/mcp-adapters'
+import { DynamicStructuredTool } from '@langchain/core/tools'
+import { z } from 'zod'
 
 import type * as _lcTypes from 'langchain'
 import type * as _lcMessages from '@langchain/core/messages'
@@ -15,13 +20,39 @@ import type * as _lcZodTypes from '@langchain/core/utils/types'
 
 import { BASE_SYSTEM_PROMPT } from './system-prompt'
 
+// Types for agent config
+interface LearnedInsight {
+  id: string
+  content: string
+  source: string
+  createdAt: string
+  enabled: boolean
+}
+
+interface McpServerConfig {
+  name: string
+  command: string
+  args: string[]
+  env?: Record<string, string>
+  enabled: boolean
+}
+
+// Global MCP client for managing connections
+let mcpClient: MultiServerMCPClient | null = null
+
 /**
  * Generate the full system prompt for the agent.
+ * Uses custom prompt if set (from agent config or global), otherwise uses base prompt.
+ * Appends enabled learned insights (from agent config or global).
  *
  * @param workspacePath - The workspace path the agent is operating in
+ * @param agentConfig - Optional agent-specific config (custom_prompt, learned_insights)
  * @returns The complete system prompt
  */
-function getSystemPrompt(workspacePath: string): string {
+function getSystemPrompt(
+  workspacePath: string,
+  agentConfig?: { custom_prompt?: string | null; learned_insights?: LearnedInsight[] }
+): string {
   const workingDirSection = `
 ### File System and Paths
 
@@ -33,7 +64,30 @@ function getSystemPrompt(workspacePath: string): string {
 - Always use full absolute paths for all file operations
 `
 
-  return workingDirSection + BASE_SYSTEM_PROMPT
+  // Use agent's custom prompt if set, otherwise fall back to global, then base prompt
+  const customPrompt = agentConfig?.custom_prompt ?? getCustomPrompt()
+  const baseContent = customPrompt || BASE_SYSTEM_PROMPT
+
+  // Get enabled learned insights from agent config or global
+  const insights = agentConfig?.learned_insights
+    ? agentConfig.learned_insights.filter((i) => i.enabled)
+    : getLearnedInsights().filter((i) => i.enabled)
+
+  let insightsSection = ''
+  if (insights.length > 0) {
+    insightsSection = `
+
+## Learned Preferences & Instructions
+
+The user has provided these specific preferences and instructions:
+
+${insights.map((i) => `- ${i.content}`).join('\n')}
+
+Always follow these preferences when applicable.
+`
+  }
+
+  return workingDirSection + baseContent + insightsSection
 }
 
 // Per-thread checkpointer cache
@@ -114,6 +168,74 @@ export interface CreateAgentRuntimeOptions {
   workspacePath: string
 }
 
+/**
+ * Initialize MCP client with enabled servers.
+ * Returns tools from all connected MCP servers.
+ *
+ * @param agentMcpServers - Optional agent-specific MCP server configs
+ */
+async function initializeMcpTools(agentMcpServers?: McpServerConfig[]): Promise<DynamicStructuredTool[]> {
+  // Use agent-specific MCP servers if provided, otherwise fall back to global
+  const enabledServers = agentMcpServers
+    ? agentMcpServers.filter((s) => s.enabled)
+    : getEnabledMcpServers()
+
+  if (enabledServers.length === 0) {
+    console.log('[Runtime] No MCP servers enabled')
+    return []
+  }
+
+  console.log('[Runtime] Initializing MCP servers:', enabledServers.map((s) => s.name))
+
+  // Close existing client if any
+  if (mcpClient) {
+    try {
+      await mcpClient.close()
+    } catch (e) {
+      console.warn('[Runtime] Error closing existing MCP client:', e)
+    }
+  }
+
+  // Build config for MultiServerMCPClient
+  const mcpConfig: Record<string, { command: string; args: string[]; env?: Record<string, string> }> =
+    {}
+
+  for (const server of enabledServers) {
+    mcpConfig[server.name] = {
+      command: server.command,
+      args: server.args,
+      env: server.env
+    }
+  }
+
+  try {
+    mcpClient = new MultiServerMCPClient({
+      mcpServers: mcpConfig,
+      // Continue with other servers if one fails
+      onConnectionError: 'ignore'
+    })
+    await mcpClient.initializeConnections()
+    const tools = await mcpClient.getTools()
+    console.log(
+      '[Runtime] MCP tools loaded:',
+      tools.map((t) => t.name)
+    )
+    return tools
+  } catch (error) {
+    console.error('[Runtime] Failed to initialize MCP servers:', error)
+    // Clean up on failure
+    if (mcpClient) {
+      try {
+        await mcpClient.close()
+      } catch {
+        // Ignore close errors
+      }
+      mcpClient = null
+    }
+    return []
+  }
+}
+
 // Create agent runtime with configured model and checkpointer
 export type AgentRuntime = ReturnType<typeof createDeepAgent>
 
@@ -135,7 +257,40 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions) {
   console.log('[Runtime] Thread ID:', threadId)
   console.log('[Runtime] Workspace path:', workspacePath)
 
-  const model = getModelInstance(modelId)
+  // Load agent config for this thread
+  const thread = getThread(threadId)
+  const agentId = thread?.agent_id
+  let agentConfig: {
+    custom_prompt?: string | null
+    learned_insights?: LearnedInsight[]
+    mcp_servers?: McpServerConfig[]
+    model_default?: string
+  } | null = null
+
+  if (agentId) {
+    const agent = getAgent(agentId)
+    const rawConfig = getAgentConfig(agentId)
+
+    if (rawConfig) {
+      agentConfig = {
+        custom_prompt: rawConfig.custom_prompt,
+        learned_insights: rawConfig.learned_insights
+          ? JSON.parse(rawConfig.learned_insights)
+          : undefined,
+        mcp_servers: rawConfig.mcp_servers ? JSON.parse(rawConfig.mcp_servers) : undefined
+      }
+    }
+
+    if (agent) {
+      agentConfig = { ...agentConfig, model_default: agent.model_default }
+    }
+
+    console.log('[Runtime] Using agent config for agent:', agentId)
+  }
+
+  // Use agent's model_default if no modelId specified and agent has one
+  const effectiveModelId = modelId ?? agentConfig?.model_default
+  const model = getModelInstance(effectiveModelId)
   console.log('[Runtime] Model instance created:', typeof model)
 
   const checkpointer = await getCheckpointer(threadId)
@@ -148,7 +303,51 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions) {
     maxOutputBytes: 100_000 // ~100KB
   })
 
-  const systemPrompt = getSystemPrompt(workspacePath)
+  // Load MCP tools from enabled servers (use agent-specific if available)
+  const mcpTools = await initializeMcpTools(agentConfig?.mcp_servers)
+
+  // Create learn_insight tool for the agent to save learned preferences
+  // Saves to agent-specific config if available, otherwise global
+  const learnInsightTool = new DynamicStructuredTool({
+    name: 'learn_insight',
+    description: `Save a learned insight or preference to remember for future conversations.
+Use this when the user explicitly asks you to remember something, or when you learn something
+important about their preferences (e.g., coding style, preferred libraries, naming conventions).
+The insight will be added to your system prompt for all future interactions.`,
+    schema: z.object({
+      insight: z
+        .string()
+        .describe(
+          'The insight or preference to remember. Should be clear, actionable, and concise. Example: "Always use TypeScript strict mode" or "Prefer async/await over .then() chains"'
+        )
+    }),
+    func: async ({ insight }) => {
+      if (agentId) {
+        // Save to agent-specific config
+        const currentConfig = getAgentConfig(agentId)
+        const currentInsights: LearnedInsight[] = currentConfig?.learned_insights
+          ? JSON.parse(currentConfig.learned_insights)
+          : []
+        const newInsight: LearnedInsight = {
+          id: `insight_${Date.now()}`,
+          content: insight,
+          source: 'auto_learned',
+          createdAt: new Date().toISOString(),
+          enabled: true
+        }
+        updateAgentConfig(agentId, {
+          learned_insights: [...currentInsights, newInsight]
+        })
+        return `Insight saved to agent config: "${insight}". This will be included in my system prompt for future conversations with this agent.`
+      } else {
+        // Fall back to global storage
+        addLearnedInsight(insight, 'auto_learned')
+        return `Insight saved successfully: "${insight}". This will be included in my system prompt for future conversations.`
+      }
+    }
+  })
+
+  const systemPrompt = getSystemPrompt(workspacePath, agentConfig ?? undefined)
 
   // Custom filesystem prompt for absolute paths (matches virtualMode: false)
   const filesystemSystemPrompt = `You have access to a filesystem. All file paths use fully qualified absolute system paths.
@@ -162,11 +361,16 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions) {
 
 The workspace root is: ${workspacePath}`
 
+  // Combine MCP tools with custom tools
+  const allTools = [...mcpTools, learnInsightTool]
+
   const agent = createDeepAgent({
     model,
     checkpointer,
     backend,
     systemPrompt,
+    // Add MCP tools and custom tools to the agent
+    tools: allTools.length > 0 ? allTools : undefined,
     // Custom filesystem prompt for absolute paths (requires deepagents update)
     filesystemSystemPrompt,
     // Require human approval for all shell commands
@@ -174,14 +378,30 @@ The workspace root is: ${workspacePath}`
   } as Parameters<typeof createDeepAgent>[0])
 
   console.log('[Runtime] Deep agent created with LocalSandbox at:', workspacePath)
+  console.log('[Runtime] Custom tools available: learn_insight')
+  if (mcpTools.length > 0) {
+    console.log('[Runtime] MCP tools available:', mcpTools.map((t) => t.name).join(', '))
+  }
+  console.log('[Runtime] Total additional tools:', allTools.length)
   return agent
 }
 
 export type DeepAgent = ReturnType<typeof createDeepAgent>
 
-// Clean up all checkpointer resources
+// Clean up all checkpointer resources and MCP connections
 export async function closeRuntime(): Promise<void> {
   const closePromises = Array.from(checkpointers.values()).map((cp) => cp.close())
   await Promise.all(closePromises)
   checkpointers.clear()
+
+  // Close MCP client
+  if (mcpClient) {
+    try {
+      await mcpClient.close()
+      mcpClient = null
+      console.log('[Runtime] MCP client closed')
+    } catch (e) {
+      console.warn('[Runtime] Error closing MCP client:', e)
+    }
+  }
 }

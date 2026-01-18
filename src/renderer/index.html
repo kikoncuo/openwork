@@ -2,11 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>openwork</title>
+    <title>Buddy</title>
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      content="default-src 'self'; script-src 'self' https://tweakcn.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://tweakcn.com"
     />
+    <script
+      crossorigin="anonymous"
+      src="https://tweakcn.com/live-preview.min.js"
+    ></script>
   </head>
   <body>
     <div id="root"></div>

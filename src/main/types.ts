@@ -9,6 +9,30 @@ export interface Thread {
   status: ThreadStatus
   thread_values?: Record<string, unknown>
   title?: string
+  agent_id?: string | null
+}
+
+// Agent types
+export type AgentIcon = 'bot' | 'sparkles' | 'code' | 'pen' | 'search' | 'terminal' | 'brain' | 'shield'
+
+export interface Agent {
+  agent_id: string
+  name: string
+  color: string
+  icon: AgentIcon
+  model_default: string
+  is_default: boolean
+  created_at: Date
+  updated_at: Date
+}
+
+export interface AgentConfig {
+  agent_id: string
+  tool_configs: unknown[] | null
+  mcp_servers: unknown[] | null
+  custom_prompt: string | null
+  learned_insights: unknown[] | null
+  updated_at: Date
 }
 
 // Run types

@@ -1,0 +1,5 @@
+allowedDeprecatedVersions:
+  boolean: '*'
+onlyBuiltDependencies:
+  - electron
+  - esbuild

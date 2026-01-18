@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#8B5CF6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#A78BFA;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="face-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#FAFAFA;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#F5F5F5;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="240" fill="url(#bg-gradient)"/>
+
+  <!-- Friendly face circle -->
+  <circle cx="256" cy="270" r="160" fill="url(#face-gradient)"/>
+
+  <!-- Left eye -->
+  <ellipse cx="200" cy="240" rx="28" ry="32" fill="#1F2937"/>
+  <circle cx="208" cy="232" r="8" fill="#FFFFFF"/>
+
+  <!-- Right eye -->
+  <ellipse cx="312" cy="240" rx="28" ry="32" fill="#1F2937"/>
+  <circle cx="320" cy="232" r="8" fill="#FFFFFF"/>
+
+  <!-- Smile -->
+  <path d="M180 310 Q256 380 332 310" stroke="#1F2937" stroke-width="16" stroke-linecap="round" fill="none"/>
+
+  <!-- Rosy cheeks -->
+  <circle cx="145" cy="290" r="24" fill="#F472B6" opacity="0.5"/>
+  <circle cx="367" cy="290" r="24" fill="#F472B6" opacity="0.5"/>
+
+  <!-- Small antenna/spark on top -->
+  <circle cx="256" cy="80" r="16" fill="#FCD34D"/>
+  <path d="M256 96 L256 130" stroke="#FCD34D" stroke-width="8" stroke-linecap="round"/>
+</svg>

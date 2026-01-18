@@ -1,7 +1,11 @@
 import { create } from 'zustand'
-import type { Thread, ModelConfig, Provider } from '@/types'
+import type { Thread, ModelConfig, Provider, Agent } from '@/types'
 
 interface AppState {
+  // Agents
+  agents: Agent[]
+  activeAgentId: string | null
+
   // Threads
   threads: Thread[]
   currentThreadId: string | null
@@ -15,9 +19,20 @@ interface AppState {
 
   // Settings dialog state
   settingsOpen: boolean
+  agentEditorOpen: boolean
+  editingAgentId: string | null
 
   // Sidebar state
   sidebarCollapsed: boolean
+
+  // Agent actions
+  loadAgents: () => Promise<void>
+  setActiveAgent: (agentId: string) => void
+  createAgent: (input: { name: string; color?: string; icon?: string; model_default?: string }) => Promise<Agent>
+  updateAgent: (agentId: string, updates: { name?: string; color?: string; icon?: string; model_default?: string }) => Promise<Agent | null>
+  deleteAgent: (agentId: string) => Promise<{ success: boolean; error?: string; reassignedThreads?: number }>
+  openAgentEditor: (agentId?: string) => void
+  closeAgentEditor: () => void
 
   // Thread actions
   loadThreads: () => Promise<void>
@@ -26,6 +41,7 @@ interface AppState {
   deleteThread: (threadId: string) => Promise<void>
   updateThread: (threadId: string, updates: Partial<Thread>) => Promise<void>
   generateTitleForFirstMessage: (threadId: string, content: string) => Promise<void>
+  reassignThreadToAgent: (threadId: string, agentId: string) => Promise<void>
 
   // Model actions
   loadModels: () => Promise<void>
@@ -46,13 +62,96 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set, get) => ({
   // Initial state
+  agents: [],
+  activeAgentId: null,
   threads: [],
   currentThreadId: null,
   models: [],
   providers: [],
   rightPanelTab: 'todos',
   settingsOpen: false,
+  agentEditorOpen: false,
+  editingAgentId: null,
   sidebarCollapsed: false,
+
+  // Agent actions
+  loadAgents: async () => {
+    const agentsData = await window.api.agents.list()
+    // Convert timestamps to Date objects
+    const agents: Agent[] = agentsData.map((a) => ({
+      ...a,
+      is_default: Boolean(a.is_default),
+      created_at: new Date(a.created_at),
+      updated_at: new Date(a.updated_at),
+    }))
+    set({ agents })
+
+    // Set active agent to default if none selected
+    if (!get().activeAgentId && agents.length > 0) {
+      const defaultAgent = agents.find((a) => a.is_default) || agents[0]
+      set({ activeAgentId: defaultAgent.agent_id })
+    }
+  },
+
+  setActiveAgent: (agentId: string) => {
+    set({ activeAgentId: agentId })
+  },
+
+  createAgent: async (input) => {
+    const agentData = await window.api.agents.create(input)
+    const agent: Agent = {
+      ...agentData,
+      is_default: Boolean(agentData.is_default),
+      created_at: new Date(agentData.created_at),
+      updated_at: new Date(agentData.updated_at),
+    }
+    set((state) => ({
+      agents: [...state.agents, agent],
+      activeAgentId: agent.agent_id, // Switch to newly created agent
+    }))
+    return agent
+  },
+
+  updateAgent: async (agentId, updates) => {
+    const agentData = await window.api.agents.update(agentId, updates)
+    if (!agentData) return null
+    const agent: Agent = {
+      ...agentData,
+      is_default: Boolean(agentData.is_default),
+      created_at: new Date(agentData.created_at),
+      updated_at: new Date(agentData.updated_at),
+    }
+    set((state) => ({
+      agents: state.agents.map((a) => (a.agent_id === agentId ? agent : a)),
+    }))
+    return agent
+  },
+
+  deleteAgent: async (agentId) => {
+    const result = await window.api.agents.delete(agentId)
+    if (result.success) {
+      set((state) => {
+        const agents = state.agents.filter((a) => a.agent_id !== agentId)
+        // If deleted agent was active, switch to default
+        const newActiveId =
+          state.activeAgentId === agentId
+            ? agents.find((a) => a.is_default)?.agent_id || agents[0]?.agent_id || null
+            : state.activeAgentId
+        return { agents, activeAgentId: newActiveId }
+      })
+      // Reload threads to update agent assignments
+      await get().loadThreads()
+    }
+    return result
+  },
+
+  openAgentEditor: (agentId?: string) => {
+    set({ agentEditorOpen: true, editingAgentId: agentId || null })
+  },
+
+  closeAgentEditor: () => {
+    set({ agentEditorOpen: false, editingAgentId: null })
+  },
 
   // Thread actions
   loadThreads: async () => {
@@ -66,7 +165,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   createThread: async (metadata?: Record<string, unknown>) => {
-    const thread = await window.api.threads.create(metadata)
+    // Create thread with active agent
+    const activeAgentId = get().activeAgentId
+    const thread = await window.api.threads.create(metadata, activeAgentId || undefined)
     set((state) => ({
       threads: [thread, ...state.threads],
       currentThreadId: thread.thread_id
@@ -116,6 +217,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       console.error('[Store] Failed to generate title:', error)
     }
+  },
+
+  reassignThreadToAgent: async (threadId: string, agentId: string) => {
+    const updated = await window.api.threads.update(threadId, { agent_id: agentId } as Partial<Thread>)
+    set((state) => ({
+      threads: state.threads.map((t) => (t.thread_id === threadId ? updated : t))
+    }))
   },
 
   // Model actions

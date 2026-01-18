@@ -10,7 +10,7 @@ let dirty = false
 /**
  * Save database to disk (debounced)
  */
-function saveToDisk(): void {
+export function saveToDisk(): void {
   if (!db) return
 
   dirty = true
@@ -107,11 +107,49 @@ export async function initializeDatabase(): Promise<SqlJsDatabase> {
     )
   `)
 
+  // Multi-agent support tables
+  db.run(`
+    CREATE TABLE IF NOT EXISTS agents (
+      agent_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT '#8B5CF6',
+      icon TEXT NOT NULL DEFAULT 'bot',
+      model_default TEXT DEFAULT 'claude-sonnet-4-5-20250929',
+      is_default INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS agent_configs (
+      agent_id TEXT PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,
+      tool_configs TEXT,
+      mcp_servers TEXT,
+      custom_prompt TEXT,
+      learned_insights TEXT,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
+  // Add agent_id column to threads if it doesn't exist
+  // SQLite doesn't have IF NOT EXISTS for columns, so we check pragmatically
+  const threadColumns = db.exec("PRAGMA table_info(threads)")
+  const hasAgentId = threadColumns[0]?.values?.some((col) => col[1] === 'agent_id')
+  if (!hasAgentId) {
+    db.run(`ALTER TABLE threads ADD COLUMN agent_id TEXT REFERENCES agents(agent_id)`)
+  }
+
   db.run(`CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_threads_agent_id ON threads(agent_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_runs_thread_id ON runs(thread_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status)`)
 
   saveToDisk()
+
+  // Run migrations (imported lazily to avoid circular deps)
+  const { runAgentMigrations } = await import('./agents')
+  await runAgentMigrations()
 
   console.log('Database initialized successfully')
   return db
@@ -143,6 +181,27 @@ export interface Thread {
   status: string
   thread_values: string | null
   title: string | null
+  agent_id: string | null
+}
+
+export interface Agent {
+  agent_id: string
+  name: string
+  color: string
+  icon: string
+  model_default: string
+  is_default: number  // SQLite uses 0/1 for boolean
+  created_at: number
+  updated_at: number
+}
+
+export interface AgentConfig {
+  agent_id: string
+  tool_configs: string | null  // JSON
+  mcp_servers: string | null   // JSON
+  custom_prompt: string | null
+  learned_insights: string | null  // JSON
+  updated_at: number
 }
 
 export function getAllThreads(): Thread[] {
@@ -173,14 +232,14 @@ export function getThread(threadId: string): Thread | null {
   return thread
 }
 
-export function createThread(threadId: string, metadata?: Record<string, unknown>): Thread {
+export function createThread(threadId: string, metadata?: Record<string, unknown>, agentId?: string): Thread {
   const database = getDb()
   const now = Date.now()
 
   database.run(
-    `INSERT INTO threads (thread_id, created_at, updated_at, metadata, status)
-     VALUES (?, ?, ?, ?, ?)`,
-    [threadId, now, now, metadata ? JSON.stringify(metadata) : null, 'idle']
+    `INSERT INTO threads (thread_id, created_at, updated_at, metadata, status, agent_id)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [threadId, now, now, metadata ? JSON.stringify(metadata) : null, 'idle', agentId || null]
   )
 
   saveToDisk()
@@ -192,7 +251,8 @@ export function createThread(threadId: string, metadata?: Record<string, unknown
     metadata: metadata ? JSON.stringify(metadata) : null,
     status: 'idle',
     thread_values: null,
-    title: null
+    title: null,
+    agent_id: agentId || null
   }
 }
 
@@ -226,6 +286,10 @@ export function updateThread(
   if (updates.title !== undefined) {
     setClauses.push('title = ?')
     values.push(updates.title)
+  }
+  if (updates.agent_id !== undefined) {
+    setClauses.push('agent_id = ?')
+    values.push(updates.agent_id)
   }
 
   values.push(threadId)

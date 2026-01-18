@@ -1,6 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, nativeImage } from 'electron'
 import { join } from 'path'
 import { registerAgentHandlers } from './ipc/agent'
+import { registerAgentEntityHandlers } from './ipc/agents'
 import { registerThreadHandlers } from './ipc/threads'
 import { registerModelHandlers } from './ipc/models'
 import { initializeDatabase } from './db'
@@ -86,7 +87,7 @@ function createWindow(): void {
 app.whenReady().then(async () => {
   // Set app user model id for windows
   if (process.platform === 'win32') {
-    app.setAppUserModelId(isDev ? process.execPath : 'com.langchain.openwork')
+    app.setAppUserModelId(isDev ? process.execPath : 'com.langchain.buddy')
   }
 
   // Set dock icon on macOS
@@ -119,6 +120,7 @@ app.whenReady().then(async () => {
 
   // Register IPC handlers
   registerAgentHandlers(ipcMain)
+  registerAgentEntityHandlers(ipcMain)
   registerThreadHandlers(ipcMain)
   registerModelHandlers(ipcMain)
 

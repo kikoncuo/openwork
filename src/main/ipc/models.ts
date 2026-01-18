@@ -4,7 +4,21 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import type { ModelConfig, Provider } from '../types'
 import { startWatching, stopWatching } from '../services/workspace-watcher'
-import { getOpenworkDir, getApiKey, setApiKey, deleteApiKey, hasApiKey } from '../storage'
+import {
+  getOpenworkDir,
+  getApiKey,
+  setApiKey,
+  deleteApiKey,
+  hasApiKey,
+  getCustomPrompt,
+  setCustomPrompt,
+  getLearnedInsights,
+  saveLearnedInsights,
+  addLearnedInsight,
+  removeLearnedInsight,
+  toggleLearnedInsight,
+  type LearnedInsight
+} from '../storage'
 
 // Store for non-sensitive settings only (no encryption needed)
 const store = new Store({
@@ -455,6 +469,133 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
     }
   )
 
+  // MCP Server handlers
+  ipcMain.handle('mcp:list', async () => {
+    return getMcpServers()
+  })
+
+  ipcMain.handle('mcp:save', async (_event, servers: MCPServerConfig[]) => {
+    saveMcpServers(servers)
+    return servers
+  })
+
+  ipcMain.handle('mcp:add', async (_event, server: MCPServerConfig) => {
+    const servers = getMcpServers()
+    servers.push(server)
+    saveMcpServers(servers)
+    return servers
+  })
+
+  ipcMain.handle('mcp:remove', async (_event, serverId: string) => {
+    const servers = getMcpServers().filter((s) => s.id !== serverId)
+    saveMcpServers(servers)
+    return servers
+  })
+
+  ipcMain.handle('mcp:toggle', async (_event, serverId: string) => {
+    const servers = getMcpServers().map((s) =>
+      s.id === serverId ? { ...s, enabled: !s.enabled } : s
+    )
+    saveMcpServers(servers)
+    return servers
+  })
+
+  // Test MCP server connection and get tools
+  ipcMain.handle(
+    'mcp:testConnection',
+    async (
+      _event,
+      server: { name: string; command: string; args: string[]; env?: Record<string, string> }
+    ) => {
+      const { MultiServerMCPClient } = await import('@langchain/mcp-adapters')
+
+      const mcpConfig = {
+        [server.name]: {
+          command: server.command,
+          args: server.args,
+          env: server.env
+        }
+      }
+
+      let client: InstanceType<typeof MultiServerMCPClient> | null = null
+
+      try {
+        client = new MultiServerMCPClient({ mcpServers: mcpConfig })
+        await client.initializeConnections()
+        const tools = await client.getTools()
+
+        const toolInfo = tools.map((t) => ({
+          name: t.name,
+          description: t.description || ''
+        }))
+
+        return {
+          success: true,
+          tools: toolInfo
+        }
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          tools: []
+        }
+      } finally {
+        if (client) {
+          try {
+            await client.close()
+          } catch {
+            // Ignore close errors
+          }
+        }
+      }
+    }
+  )
+
+  // Tool config handlers
+  ipcMain.handle('tools:getConfigs', async () => {
+    return getToolConfigs()
+  })
+
+  ipcMain.handle('tools:saveConfigs', async (_event, configs: ToolConfig[]) => {
+    saveToolConfigs(configs)
+    return configs
+  })
+
+  // System prompt handlers
+  ipcMain.handle('prompt:getCustom', async () => {
+    return getCustomPrompt()
+  })
+
+  ipcMain.handle('prompt:setCustom', async (_event, prompt: string | null) => {
+    setCustomPrompt(prompt)
+  })
+
+  ipcMain.handle('prompt:getBase', async () => {
+    const { BASE_SYSTEM_PROMPT } = await import('../agent/system-prompt')
+    return BASE_SYSTEM_PROMPT
+  })
+
+  // Learned insights handlers
+  ipcMain.handle('insights:list', async () => {
+    return getLearnedInsights()
+  })
+
+  ipcMain.handle('insights:add', async (_event, { content, source }: { content: string; source: LearnedInsight['source'] }) => {
+    return addLearnedInsight(content, source)
+  })
+
+  ipcMain.handle('insights:remove', async (_event, id: string) => {
+    removeLearnedInsight(id)
+  })
+
+  ipcMain.handle('insights:toggle', async (_event, id: string) => {
+    toggleLearnedInsight(id)
+  })
+
+  ipcMain.handle('insights:save', async (_event, insights: LearnedInsight[]) => {
+    saveLearnedInsights(insights)
+  })
+
   // Read a binary file (images, PDFs, etc.) and return as base64
   ipcMain.handle(
     'workspace:readBinaryFile',
@@ -516,4 +657,56 @@ export { getApiKey } from '../storage'
 
 export function getDefaultModel(): string {
   return store.get('defaultModel', 'claude-sonnet-4-5-20250929') as string
+}
+
+// MCP Server types
+export interface MCPServerConfig {
+  id: string
+  name: string
+  command: string
+  args: string[]
+  enabled: boolean
+  env?: Record<string, string>
+}
+
+// Get all MCP server configs
+export function getMcpServers(): MCPServerConfig[] {
+  return store.get('mcpServers', []) as MCPServerConfig[]
+}
+
+// Get enabled MCP servers
+export function getEnabledMcpServers(): MCPServerConfig[] {
+  return getMcpServers().filter((s) => s.enabled)
+}
+
+// Save MCP servers
+export function saveMcpServers(servers: MCPServerConfig[]): void {
+  store.set('mcpServers', servers)
+}
+
+// Tool enable/disable state with interrupt option
+export interface ToolConfig {
+  id: string
+  enabled: boolean
+  requireApproval?: boolean // If true, require user approval before executing
+}
+
+export function getToolConfigs(): ToolConfig[] {
+  return store.get('toolConfigs', []) as ToolConfig[]
+}
+
+export function saveToolConfigs(configs: ToolConfig[]): void {
+  store.set('toolConfigs', configs)
+}
+
+// Get tool configs as a map for quick lookup
+export function getToolConfigMap(): Record<string, ToolConfig> {
+  const configs = getToolConfigs()
+  return configs.reduce(
+    (acc, config) => {
+      acc[config.id] = config
+      return acc
+    },
+    {} as Record<string, ToolConfig>
+  )
 }

@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Plus, MessageSquare, Trash2, Pencil, Loader2 } from 'lucide-react'
+import { useState, useMemo } from 'react'
+import { Plus, MessageSquare, Trash2, Pencil, Loader2, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useAppStore } from '@/lib/store'
@@ -10,9 +10,14 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
-  ContextMenuTrigger
+  ContextMenuTrigger,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger
 } from '@/components/ui/context-menu'
-import type { Thread } from '@/types'
+import { SettingsDialog } from '@/components/settings/SettingsDialog'
+import { AgentIconComponent } from '@/lib/agent-icons'
+import type { Thread, Agent } from '@/types'
 
 // Thread loading indicator that subscribes to the stream context
 function ThreadLoadingIcon({ threadId }: { threadId: string }): React.JSX.Element {
@@ -24,9 +29,23 @@ function ThreadLoadingIcon({ threadId }: { threadId: string }): React.JSX.Elemen
   return <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
 }
 
+// Agent color indicator dot
+function AgentDot({ agent }: { agent?: Agent }): React.JSX.Element | null {
+  if (!agent) return null
+  return (
+    <div
+      className="size-2 rounded-full shrink-0"
+      style={{ backgroundColor: agent.color }}
+      title={agent.name}
+    />
+  )
+}
+
 // Individual thread list item component
 function ThreadListItem({
   thread,
+  agent,
+  agents,
   isSelected,
   isEditing,
   editingTitle,
@@ -35,9 +54,12 @@ function ThreadListItem({
   onStartEditing,
   onSaveTitle,
   onCancelEditing,
-  onEditingTitleChange
+  onEditingTitleChange,
+  onReassignToAgent
 }: {
   thread: Thread
+  agent?: Agent
+  agents: Agent[]
   isSelected: boolean
   isEditing: boolean
   editingTitle: string
@@ -47,6 +69,7 @@ function ThreadListItem({
   onSaveTitle: () => void
   onCancelEditing: () => void
   onEditingTitleChange: (value: string) => void
+  onReassignToAgent: (agentId: string) => void
 }): React.JSX.Element {
   return (
     <ContextMenu>
@@ -64,6 +87,7 @@ function ThreadListItem({
             }
           }}
         >
+          <AgentDot agent={agent} />
           <ThreadLoadingIcon threadId={thread.thread_id} />
           <div className="flex-1 min-w-0 overflow-hidden">
             {isEditing ? (
@@ -109,6 +133,36 @@ function ThreadListItem({
           <Pencil className="size-4 mr-2" />
           Rename
         </ContextMenuItem>
+        {agents.length > 1 && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuSub>
+              <ContextMenuSubTrigger>
+                <div
+                  className="size-3 rounded-full mr-2"
+                  style={{ backgroundColor: agent?.color || '#888' }}
+                />
+                Assign to Agent
+              </ContextMenuSubTrigger>
+              <ContextMenuSubContent>
+                {agents.map((a) => (
+                  <ContextMenuItem
+                    key={a.agent_id}
+                    onClick={() => onReassignToAgent(a.agent_id)}
+                    disabled={a.agent_id === thread.agent_id}
+                  >
+                    <div
+                      className="size-3 rounded-full mr-2"
+                      style={{ backgroundColor: a.color }}
+                    />
+                    {a.name}
+                    {a.agent_id === thread.agent_id && ' (current)'}
+                  </ContextMenuItem>
+                ))}
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+          </>
+        )}
         <ContextMenuSeparator />
         <ContextMenuItem
           variant="destructive"
@@ -129,8 +183,21 @@ export function ThreadSidebar(): React.JSX.Element {
     createThread,
     selectThread,
     deleteThread,
-    updateThread
+    updateThread,
+    settingsOpen,
+    setSettingsOpen,
+    agents,
+    reassignThreadToAgent
   } = useAppStore()
+
+  // Create agent lookup map for quick access
+  const agentMap = useMemo(() => {
+    const map = new Map<string, typeof agents[0]>()
+    for (const agent of agents) {
+      map.set(agent.agent_id, agent)
+    }
+    return map
+  }, [agents])
 
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
@@ -158,41 +225,61 @@ export function ThreadSidebar(): React.JSX.Element {
   }
 
   return (
-    <aside className="flex h-full w-full flex-col border-r border-border bg-sidebar overflow-hidden">
-      {/* New Thread Button - with dynamic safe area padding when zoomed out */}
-      <div className="p-2" style={{ paddingTop: 'calc(8px + var(--sidebar-safe-padding, 0px))' }}>
-        <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={handleNewThread}>
-          <Plus className="size-4" />
-          New Thread
-        </Button>
-      </div>
-
-      {/* Thread List */}
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="p-2 space-y-1 overflow-hidden">
-          {threads.map((thread) => (
-            <ThreadListItem
-              key={thread.thread_id}
-              thread={thread}
-              isSelected={currentThreadId === thread.thread_id}
-              isEditing={editingThreadId === thread.thread_id}
-              editingTitle={editingTitle}
-              onSelect={() => selectThread(thread.thread_id)}
-              onDelete={() => deleteThread(thread.thread_id)}
-              onStartEditing={() => startEditing(thread.thread_id, thread.title || '')}
-              onSaveTitle={saveTitle}
-              onCancelEditing={cancelEditing}
-              onEditingTitleChange={setEditingTitle}
-            />
-          ))}
-
-          {threads.length === 0 && (
-            <div className="px-3 py-8 text-center text-sm text-muted-foreground">
-              No threads yet
-            </div>
-          )}
+    <>
+      <aside className="flex h-full w-full flex-col border-r border-border bg-sidebar overflow-hidden">
+        {/* New Thread Button - with dynamic safe area padding when zoomed out */}
+        <div className="p-2" style={{ paddingTop: 'calc(8px + var(--sidebar-safe-padding, 0px))' }}>
+          <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={handleNewThread}>
+            <Plus className="size-4" />
+            New Thread
+          </Button>
         </div>
-      </ScrollArea>
-    </aside>
+
+        {/* Thread List */}
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="p-2 space-y-1 overflow-hidden">
+            {threads.map((thread) => (
+              <ThreadListItem
+                key={thread.thread_id}
+                thread={thread}
+                agent={thread.agent_id ? agentMap.get(thread.agent_id) : undefined}
+                agents={agents}
+                isSelected={currentThreadId === thread.thread_id}
+                isEditing={editingThreadId === thread.thread_id}
+                editingTitle={editingTitle}
+                onSelect={() => selectThread(thread.thread_id)}
+                onDelete={() => deleteThread(thread.thread_id)}
+                onStartEditing={() => startEditing(thread.thread_id, thread.title || '')}
+                onSaveTitle={saveTitle}
+                onCancelEditing={cancelEditing}
+                onEditingTitleChange={setEditingTitle}
+                onReassignToAgent={(agentId) => reassignThreadToAgent(thread.thread_id, agentId)}
+              />
+            ))}
+
+            {threads.length === 0 && (
+              <div className="px-3 py-8 text-center text-sm text-muted-foreground">
+                No threads yet
+              </div>
+            )}
+          </div>
+        </ScrollArea>
+
+        {/* Settings Button */}
+        <div className="p-2 border-t border-border">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start gap-2"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings className="size-4" />
+            Settings
+          </Button>
+        </div>
+      </aside>
+
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+    </>
   )
 }

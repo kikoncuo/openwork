@@ -3,6 +3,8 @@ import { ThreadSidebar } from '@/components/sidebar/ThreadSidebar'
 import { TabbedPanel, TabBar } from '@/components/tabs'
 import { RightPanel } from '@/components/panels/RightPanel'
 import { ResizeHandle } from '@/components/ui/resizable'
+import { AgentBadge } from '@/components/ui/AgentBadge'
+import { AgentEditorDialog } from '@/components/settings/AgentEditorDialog'
 import { useAppStore } from '@/lib/store'
 import { ThreadProvider } from '@/lib/thread-context'
 
@@ -16,7 +18,7 @@ const RIGHT_MAX = 450
 const RIGHT_DEFAULT = 320
 
 function App(): React.JSX.Element {
-  const { currentThreadId, loadThreads, createThread } = useAppStore()
+  const { currentThreadId, loadThreads, createThread, loadAgents, agentEditorOpen, closeAgentEditor, editingAgentId } = useAppStore()
   const [isLoading, setIsLoading] = useState(true)
   const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT)
   const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT)
@@ -95,6 +97,8 @@ function App(): React.JSX.Element {
   useEffect(() => {
     async function init(): Promise<void> {
       try {
+        // Load agents first (this also creates default agent if needed)
+        await loadAgents()
         await loadThreads()
         // Create a default thread if none exist
         const threads = useAppStore.getState().threads
@@ -108,7 +112,7 @@ function App(): React.JSX.Element {
       }
     }
     init()
-  }, [loadThreads, createThread])
+  }, [loadThreads, createThread, loadAgents])
 
   if (isLoading) {
     return (
@@ -122,7 +126,7 @@ function App(): React.JSX.Element {
     <ThreadProvider>
     <div className="flex h-screen overflow-hidden bg-background">
       {/* Fixed app badge - zoom independent position and size */}
-      <div
+      <AgentBadge
         className="app-badge"
         style={{
           // Compensate both position and scale for zoom
@@ -132,10 +136,14 @@ function App(): React.JSX.Element {
           transform: `scale(${1 / zoomLevel})`,
           transformOrigin: 'top left'
         }}
-      >
-        <span className="app-badge-name">OPENWORK</span>
-        <span className="app-badge-version">{__APP_VERSION__}</span>
-      </div>
+      />
+
+      {/* Agent Editor Dialog */}
+      <AgentEditorDialog
+        open={agentEditorOpen}
+        onOpenChange={(open) => !open && closeAgentEditor()}
+        agentId={editingAgentId}
+      />
 
       {/* Left + Center column */}
       <div className="flex flex-col flex-1 min-w-0">
