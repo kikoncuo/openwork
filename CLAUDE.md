@@ -140,6 +140,49 @@ npm run typecheck # Type check TypeScript
 - Be aware that agents can modify files in the selected workspace
 - Review agent actions before approving destructive operations
 
+## MCP Server Integration
+
+**NEW:** openwork now supports MCP (Model Context Protocol) servers for extending agent capabilities.
+
+### MCP Architecture
+- **Configuration UI**: `src/renderer/src/components/settings/MCPServersSection.tsx`
+- **Storage**: JSON-based in `~/.openwork/mcp-servers.json`
+- **IPC Handlers**: `src/main/ipc/mcp.ts`
+- **Runtime Integration**: `src/main/agent/runtime.ts`
+- **Types**: `src/main/types/mcp.ts`
+
+### MCP Server Types
+- **URL (SSE)**: Connect to HTTP/HTTPS MCP endpoints
+- **STDIO**: Launch local MCP processes
+
+### Adding an MCP Server
+1. Open Settings → MCP Servers section
+2. Click "Add Server"
+3. Configure:
+   - Server name and URL
+   - Optional authentication token
+   - Interrupt settings (require approval before tool calls)
+4. Click "Create"
+
+### Interrupt Control
+- **Global Server Level**: `defaultRequireInterrupt` - applies to all tools from server
+- **Per-Tool Override**: Configure individual tools in `toolConfigs`
+- Integrates with existing HITL (Human-in-the-Loop) system
+
+### Storage Location
+MCP server configurations are stored in:
+```
+~/.openwork/mcp-servers.json
+```
+
+### Files Involved
+- **Types**: `src/main/types/mcp.ts`
+- **Storage**: `src/main/storage.ts` (MCP CRUD functions)
+- **IPC**: `src/main/ipc/mcp.ts`
+- **Runtime**: `src/main/agent/runtime.ts` (loads and configures MCP servers)
+- **UI**: `src/renderer/src/components/settings/MCPServersSection.tsx`
+- **Preload**: `src/preload/index.ts` and `index.d.ts` (window.api.mcp interface)
+
 ## Common Tasks
 
 ### Adding a New Model
