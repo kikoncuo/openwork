@@ -4,6 +4,7 @@ import { getDefaultModel } from '../ipc/models'
 import { getApiKey, getThreadCheckpointPath, getEnabledMCPServers } from '../storage'
 import { ChatAnthropic, tools as anthropicTools } from '@langchain/anthropic'
 import { ChatOpenAI, tools as openaiTools } from '@langchain/openai'
+import type Anthropic from '@anthropic-ai/sdk'
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai'
 import { SqlJsSaver } from '../checkpointer/sqljs-saver'
 import { LocalSandbox } from './local-sandbox'
@@ -61,25 +62,22 @@ export async function closeCheckpointer(threadId: string): Promise<void> {
 }
 
 // Convert MCP server config to Anthropic API format
-function mcpServerToAnthropicFormat(server: MCPServerConfig): Record<string, unknown> {
-  const config: Record<string, unknown> = {
-    type: server.type,
-    name: server.name // Use server.name for consistency with MCP toolset
+function mcpServerToAnthropicFormat(server: MCPServerConfig): Anthropic.Beta.Messages.BetaRequestMCPServerURLDefinition {
+  const config: Anthropic.Beta.Messages.BetaRequestMCPServerURLDefinition = {
+    type: server.type as 'url',
+    name: server.name, // Use server.name for consistency with MCP toolset
+    url: server.url || ''
   }
 
-  if (server.type === 'url' && server.url) {
-    config.url = server.url
-    if (server.authToken) {
-      config.authorization_token = server.authToken
-    }
-  } else if (server.type === 'stdio' && server.command) {
-    config.command = server.command
-    if (server.args) {
-      config.args = server.args
-    }
-    if (server.env) {
-      config.env = server.env
-    }
+  // Add optional fields
+  if (server.authToken) {
+    config.authorization_token = server.authToken
+  }
+
+  // For STDIO servers (not yet fully supported)
+  if (server.type === 'stdio' && server.command) {
+    // Note: STDIO support may need additional configuration
+    console.warn('[Runtime] STDIO MCP servers not fully tested with Anthropic')
   }
 
   return config
@@ -103,6 +101,44 @@ function detectProvider(modelId?: string): 'anthropic' | 'openai' | 'google' | '
   if (modelId.startsWith('gemini')) return 'google'
 
   return 'unknown'
+}
+
+/**
+ * Wrapper for ChatAnthropic that injects mcp_servers into all invoke calls
+ * This is a workaround since .bind() is not available on ChatAnthropic
+ */
+class AnthropicMCPWrapper extends ChatAnthropic {
+  private mcpServers: Anthropic.Beta.Messages.BetaRequestMCPServerURLDefinition[]
+
+  constructor(
+    config: ConstructorParameters<typeof ChatAnthropic>[0],
+    mcpServers: Anthropic.Beta.Messages.BetaRequestMCPServerURLDefinition[]
+  ) {
+    super(config)
+    this.mcpServers = mcpServers
+  }
+
+  // Override invoke to inject mcp_servers
+  override async invoke(
+    input: Parameters<ChatAnthropic['invoke']>[0],
+    options?: Parameters<ChatAnthropic['invoke']>[1]
+  ) {
+    return super.invoke(input, {
+      ...options,
+      mcp_servers: this.mcpServers
+    })
+  }
+
+  // Override stream to inject mcp_servers
+  override async stream(
+    input: Parameters<ChatAnthropic['stream']>[0],
+    options?: Parameters<ChatAnthropic['stream']>[1]
+  ) {
+    return super.stream(input, {
+      ...options,
+      mcp_servers: this.mcpServers
+    })
+  }
 }
 
 /**
@@ -257,15 +293,20 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions) {
   let model = getModelInstance(modelId, mcpServers)
   console.log('[Runtime] Model instance created:', typeof model)
 
-  // For Anthropic: bind mcp_servers to model for all invocations
+  // For Anthropic: wrap model to inject mcp_servers into all invocations
   if (provider === 'anthropic' && mcpServers.length > 0 && typeof model !== 'string') {
     const mcpServerConfigs = mcpServers.map(mcpServerToAnthropicFormat)
-    console.log('[Runtime] Binding mcp_servers to Anthropic model:', mcpServerConfigs.length)
+    console.log('[Runtime] Wrapping Anthropic model with MCP servers:', mcpServerConfigs.length)
 
-    // Use .bind() to attach mcp_servers to all model invocations
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    model = (model as any).bind({ mcp_servers: mcpServerConfigs })
-    console.log('[Runtime] Anthropic model bound with MCP servers')
+    // Create new wrapped model with MCP server configuration
+    const config: ConstructorParameters<typeof ChatAnthropic>[0] = {
+      model: effectiveModelId,
+      anthropicApiKey: getApiKey('anthropic')
+    }
+
+    // Create wrapped model that injects mcp_servers
+    model = new AnthropicMCPWrapper(config, mcpServerConfigs)
+    console.log('[Runtime] Anthropic model wrapped with MCP server injection')
   }
 
   // Create MCP tools for the provider
