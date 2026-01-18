@@ -2,12 +2,13 @@
 import { createDeepAgent } from 'deepagents'
 import { getDefaultModel } from '../ipc/models'
 import { getApiKey, getThreadCheckpointPath, getEnabledMCPServers } from '../storage'
-import { ChatAnthropic } from '@langchain/anthropic'
-import { ChatOpenAI } from '@langchain/openai'
+import { ChatAnthropic, tools as anthropicTools } from '@langchain/anthropic'
+import { ChatOpenAI, tools as openaiTools } from '@langchain/openai'
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai'
 import { SqlJsSaver } from '../checkpointer/sqljs-saver'
 import { LocalSandbox } from './local-sandbox'
 import type { MCPServerConfig } from '../types/mcp'
+import type { ServerTool, ClientTool } from '@langchain/core/tools'
 
 import type * as _lcTypes from 'langchain'
 import type * as _lcMessages from '@langchain/core/messages'
@@ -63,7 +64,7 @@ export async function closeCheckpointer(threadId: string): Promise<void> {
 function mcpServerToAnthropicFormat(server: MCPServerConfig): Record<string, unknown> {
   const config: Record<string, unknown> = {
     type: server.type,
-    name: server.id
+    name: server.name // Use server.name for consistency with MCP toolset
   }
 
   if (server.type === 'url' && server.url) {
@@ -84,8 +85,87 @@ function mcpServerToAnthropicFormat(server: MCPServerConfig): Record<string, unk
   return config
 }
 
+/**
+ * Detect AI provider from model ID
+ */
+function detectProvider(modelId?: string): 'anthropic' | 'openai' | 'google' | 'unknown' {
+  if (!modelId) return 'unknown'
+
+  if (modelId.startsWith('claude')) return 'anthropic'
+  if (
+    modelId.startsWith('gpt') ||
+    modelId.startsWith('o1') ||
+    modelId.startsWith('o3') ||
+    modelId.startsWith('o4')
+  ) {
+    return 'openai'
+  }
+  if (modelId.startsWith('gemini')) return 'google'
+
+  return 'unknown'
+}
+
+/**
+ * Create MCP tools for a specific provider
+ * Returns an array of LangChain-compatible tools
+ */
+function createMCPTools(
+  provider: 'anthropic' | 'openai' | 'google' | 'unknown',
+  servers: MCPServerConfig[]
+): Array<ServerTool | ClientTool> {
+  if (servers.length === 0) {
+    return []
+  }
+
+  const mcpTools: Array<ServerTool | ClientTool> = []
+
+  for (const server of servers) {
+    if (provider === 'anthropic') {
+      // Create Anthropic MCP toolset
+      console.log(`[Runtime] Creating Anthropic MCP toolset for: ${server.name}`)
+
+      const toolset = anthropicTools.mcpToolset_20251120({
+        serverName: server.name,
+        defaultConfig: { enabled: true },
+        configs: server.toolConfigs || {}
+      })
+
+      mcpTools.push(toolset)
+    } else if (provider === 'openai') {
+      // Create OpenAI MCP tool
+      console.log(`[Runtime] Creating OpenAI MCP tool for: ${server.name}`)
+
+      if (!server.url) {
+        console.warn(
+          `[Runtime] Skipping OpenAI MCP server "${server.name}" - URL required for OpenAI MCP`
+        )
+        continue
+      }
+
+      const requireApproval = server.defaultRequireInterrupt ? 'always' : 'never'
+
+      const tool = openaiTools.mcp({
+        serverLabel: server.name,
+        serverUrl: server.url,
+        serverDescription: `MCP server: ${server.name}`,
+        requireApproval: requireApproval as 'always' | 'never'
+      })
+
+      mcpTools.push(tool)
+    } else if (provider === 'google') {
+      console.warn(`[Runtime] Google models do not support MCP - skipping server: ${server.name}`)
+    }
+  }
+
+  console.log(`[Runtime] Created ${mcpTools.length} MCP tools for provider: ${provider}`)
+  return mcpTools
+}
+
 // Get the appropriate model instance based on configuration
-function getModelInstance(modelId?: string, mcpServers?: MCPServerConfig[]): ChatAnthropic | ChatOpenAI | ChatGoogleGenerativeAI | string {
+function getModelInstance(
+  modelId?: string,
+  _mcpServers?: MCPServerConfig[]
+): ChatAnthropic | ChatOpenAI | ChatGoogleGenerativeAI | string {
   const model = modelId || getDefaultModel()
   console.log('[Runtime] Using model:', model)
 
@@ -97,21 +177,10 @@ function getModelInstance(modelId?: string, mcpServers?: MCPServerConfig[]): Cha
       throw new Error('Anthropic API key not configured')
     }
 
-    const config: ConstructorParameters<typeof ChatAnthropic>[0] = {
+    return new ChatAnthropic({
       model,
       anthropicApiKey: apiKey
-    }
-
-    // Add MCP servers for Anthropic models
-    if (mcpServers && mcpServers.length > 0) {
-      console.log('[Runtime] Adding MCP servers:', mcpServers.map((s) => s.name).join(', '))
-      // Note: MCP integration requires passing mcp_servers in model invoke calls
-      // This will be handled in the deepagents library or via model configuration
-      // For now, we store the config for later use
-      ;(config as Record<string, unknown>).mcpServers = mcpServers.map(mcpServerToAnthropicFormat)
-    }
-
-    return new ChatAnthropic(config)
+    })
   } else if (
     model.startsWith('gpt') ||
     model.startsWith('o1') ||
@@ -179,8 +248,31 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions) {
     console.log('[Runtime] Enabled MCP servers:', mcpServers.map((s) => s.name).join(', '))
   }
 
-  const model = getModelInstance(modelId, mcpServers)
+  // Detect provider from model ID
+  const effectiveModelId = modelId || getDefaultModel()
+  const provider = detectProvider(effectiveModelId)
+  console.log('[Runtime] Detected provider:', provider)
+
+  // Create base model instance
+  let model = getModelInstance(modelId, mcpServers)
   console.log('[Runtime] Model instance created:', typeof model)
+
+  // For Anthropic: bind mcp_servers to model for all invocations
+  if (provider === 'anthropic' && mcpServers.length > 0 && typeof model !== 'string') {
+    const mcpServerConfigs = mcpServers.map(mcpServerToAnthropicFormat)
+    console.log('[Runtime] Binding mcp_servers to Anthropic model:', mcpServerConfigs.length)
+
+    // Use .bind() to attach mcp_servers to all model invocations
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    model = (model as any).bind({ mcp_servers: mcpServerConfigs })
+    console.log('[Runtime] Anthropic model bound with MCP servers')
+  }
+
+  // Create MCP tools for the provider
+  const mcpTools = createMCPTools(provider, mcpServers)
+  if (mcpTools.length > 0) {
+    console.log('[Runtime] MCP tools created:', mcpTools.length)
+  }
 
   const checkpointer = await getCheckpointer(threadId)
   console.log('[Runtime] Checkpointer ready for thread:', threadId)
@@ -210,13 +302,15 @@ The workspace root is: ${workspacePath}`
   const interruptConfig: Record<string, boolean> = { execute: true }
 
   // Add MCP tools that require interrupts
+  // Note: For Anthropic, interrupts are handled via HITL system
+  // For OpenAI, interrupts are handled via requireApproval in tool config
   for (const server of mcpServers) {
-    if (server.defaultRequireInterrupt) {
-      // All tools from this server require approval
+    if (server.defaultRequireInterrupt && provider === 'anthropic') {
+      // For Anthropic: mark all tools from this server for interrupt
       interruptConfig[`mcp:${server.id}`] = true
     }
-    // Individual tool configs can override
-    if (server.toolConfigs) {
+    // Individual tool configs can override (Anthropic only)
+    if (server.toolConfigs && provider === 'anthropic') {
       for (const [toolName, toolConfig] of Object.entries(server.toolConfigs)) {
         if (toolConfig.requireInterrupt) {
           interruptConfig[`mcp:${server.id}:${toolName}`] = true
@@ -232,13 +326,18 @@ The workspace root is: ${workspacePath}`
     systemPrompt,
     // Custom filesystem prompt for absolute paths (requires deepagents update)
     filesystemSystemPrompt,
+    // Pass MCP tools to the agent
+    tools: mcpTools.length > 0 ? mcpTools : undefined,
     // Require human approval for shell commands and configured MCP tools
     interruptOn: interruptConfig
   } as Parameters<typeof createDeepAgent>[0])
 
   console.log('[Runtime] Deep agent created with LocalSandbox at:', workspacePath)
   if (mcpServers.length > 0) {
-    console.log('[Runtime] MCP servers configured:', mcpServers.length)
+    console.log('[Runtime] MCP integration active:')
+    console.log(`  - Provider: ${provider}`)
+    console.log(`  - Servers: ${mcpServers.length}`)
+    console.log(`  - Tools: ${mcpTools.length}`)
   }
   return agent
 }
