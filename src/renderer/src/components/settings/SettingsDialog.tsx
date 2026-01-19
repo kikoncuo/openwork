@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Eye, EyeOff, Check, AlertCircle, Loader2, Plus, Trash2, Power, PowerOff, Wrench, Plug, RefreshCw, ShieldCheck, ShieldOff, XCircle, FileText, Sparkles, RotateCcw, Bot, AppWindow } from 'lucide-react'
+import { Eye, EyeOff, Check, AlertCircle, Loader2, Plus, Trash2, Power, PowerOff, Wrench, Plug, RefreshCw, ShieldCheck, ShieldOff, XCircle, FileText, Sparkles, RotateCcw, Bot, AppWindow, FolderOpen } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -146,6 +146,7 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
   const [agentColor, setAgentColor] = useState(AGENT_COLORS[0])
   const [agentIcon, setAgentIcon] = useState<AgentIcon>('bot')
   const [agentModel, setAgentModel] = useState('')
+  const [agentWorkspacePath, setAgentWorkspacePath] = useState<string | null>(null)
   const [savingAgent, setSavingAgent] = useState(false)
 
   // API keys state (global, shared across agents)
@@ -191,18 +192,24 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
         const nonWhatsAppTools = prevTools.filter(t => !(t.source === 'app' && t.appName === 'WhatsApp'))
 
         if (data.connected) {
-          // Load and add WhatsApp tools asynchronously
-          window.api.whatsapp.getTools().then(whatsappTools => {
+          // Load saved configs and WhatsApp tools asynchronously
+          Promise.all([
+            window.api.tools.getConfigs(),
+            window.api.whatsapp.getTools()
+          ]).then(([savedConfigs, whatsappTools]) => {
             console.log('[Settings] Connection change - loading WhatsApp tools:', whatsappTools)
-            const whatsappToolConfigs: ToolConfig[] = whatsappTools.map(t => ({
-              id: t.id,
-              name: t.name,
-              description: t.description,
-              enabled: true,
-              requireApproval: t.requireApproval,
-              source: 'app' as const,
-              appName: 'WhatsApp'
-            }))
+            const whatsappToolConfigs: ToolConfig[] = whatsappTools.map(t => {
+              const savedConfig = savedConfigs.find((c: { id: string }) => c.id === t.id)
+              return {
+                id: t.id,
+                name: t.name,
+                description: t.description,
+                enabled: savedConfig?.enabled ?? true,
+                requireApproval: savedConfig?.requireApproval ?? t.requireApproval,
+                source: 'app' as const,
+                appName: 'WhatsApp'
+              }
+            })
             setTools(current => {
               const filtered = current.filter(tool => !(tool.source === 'app' && tool.appName === 'WhatsApp'))
               return [...filtered, ...whatsappToolConfigs]
@@ -235,16 +242,21 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
           const hasWhatsAppTools = tools.some(t => t.source === 'app' && t.appName === 'WhatsApp')
           if (!hasWhatsAppTools) {
             console.log('[Settings] Tools tab: WhatsApp connected but no tools found, reloading...')
+            // Load saved configs to restore user preferences
+            const savedConfigs = await window.api.tools.getConfigs()
             const whatsappTools = await window.api.whatsapp.getTools()
-            const whatsappToolConfigs: ToolConfig[] = whatsappTools.map(t => ({
-              id: t.id,
-              name: t.name,
-              description: t.description,
-              enabled: true,
-              requireApproval: t.requireApproval,
-              source: 'app' as const,
-              appName: 'WhatsApp'
-            }))
+            const whatsappToolConfigs: ToolConfig[] = whatsappTools.map(t => {
+              const savedConfig = savedConfigs.find((c: { id: string }) => c.id === t.id)
+              return {
+                id: t.id,
+                name: t.name,
+                description: t.description,
+                enabled: savedConfig?.enabled ?? true,
+                requireApproval: savedConfig?.requireApproval ?? t.requireApproval,
+                source: 'app' as const,
+                appName: 'WhatsApp'
+              }
+            })
             setTools(prev => [...prev.filter(t => !(t.source === 'app' && t.appName === 'WhatsApp')), ...whatsappToolConfigs])
           }
         }
@@ -265,12 +277,14 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
       setAgentColor(existingAgent.color)
       setAgentIcon(existingAgent.icon)
       setAgentModel(existingAgent.model_default)
+      setAgentWorkspacePath(existingAgent.default_workspace_path || null)
     } else {
       // New agent defaults
       setAgentName('')
       setAgentColor(AGENT_COLORS[0])
       setAgentIcon('bot')
       setAgentModel(models[0]?.id || '')
+      setAgentWorkspacePath(null)
     }
 
     // Load API keys (global)
@@ -296,36 +310,39 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
     setApiKeys(keys)
     setSavedKeys(saved)
 
-    // Load tool configs
-    let mergedTools: ToolConfig[] = [...DEFAULT_TOOLS]
+    // Load tool configs (needed for both built-in and app tools)
+    let savedConfigs: Array<{ id: string; enabled: boolean; requireApproval?: boolean }> = []
     try {
-      const configs = await window.api.tools.getConfigs()
-      if (configs.length > 0) {
-        mergedTools = DEFAULT_TOOLS.map((t) => {
-          const savedConfig = configs.find((c: { id: string }) => c.id === t.id)
-          return savedConfig ? { ...t, enabled: savedConfig.enabled, requireApproval: savedConfig.requireApproval ?? t.requireApproval } : t
-        })
-      }
+      savedConfigs = await window.api.tools.getConfigs()
     } catch (e) {
       console.error('Failed to load tool configs:', e)
     }
 
-    // Load WhatsApp tools if connected
+    // Apply saved configs to built-in tools
+    let mergedTools: ToolConfig[] = DEFAULT_TOOLS.map((t) => {
+      const savedConfig = savedConfigs.find((c: { id: string }) => c.id === t.id)
+      return savedConfig ? { ...t, enabled: savedConfig.enabled, requireApproval: savedConfig.requireApproval ?? t.requireApproval } : t
+    })
+
+    // Load WhatsApp tools if connected (with saved config applied)
     try {
       const whatsappStatus = await window.api.whatsapp.getStatus()
       console.log('[Settings] WhatsApp status:', whatsappStatus)
       if (whatsappStatus.connected) {
         const whatsappTools = await window.api.whatsapp.getTools()
         console.log('[Settings] WhatsApp tools loaded:', whatsappTools)
-        const whatsappToolConfigs: ToolConfig[] = whatsappTools.map(t => ({
-          id: t.id,
-          name: t.name,
-          description: t.description,
-          enabled: true,
-          requireApproval: t.requireApproval,
-          source: 'app' as const,
-          appName: 'WhatsApp'
-        }))
+        const whatsappToolConfigs: ToolConfig[] = whatsappTools.map(t => {
+          const savedConfig = savedConfigs.find((c: { id: string }) => c.id === t.id)
+          return {
+            id: t.id,
+            name: t.name,
+            description: t.description,
+            enabled: savedConfig?.enabled ?? true,
+            requireApproval: savedConfig?.requireApproval ?? t.requireApproval,
+            source: 'app' as const,
+            appName: 'WhatsApp'
+          }
+        })
         mergedTools = [...mergedTools, ...whatsappToolConfigs]
         console.log('[Settings] Merged tools with WhatsApp:', mergedTools.length)
       }
@@ -385,15 +402,22 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
           [server.id]: { status: 'connected', tools: result.tools }
         }))
 
-        const mcpTools: ToolConfig[] = result.tools.map(t => ({
-          id: `mcp:${server.name}:${t.name}`,
-          name: t.name,
-          description: t.description || `Tool from ${server.name}`,
-          enabled: true,
-          requireApproval: false,
-          source: 'mcp' as const,
-          mcpServerName: server.name
-        }))
+        // Load saved configs to restore user preferences for MCP tools
+        const savedConfigs = await window.api.tools.getConfigs()
+
+        const mcpTools: ToolConfig[] = result.tools.map(t => {
+          const toolId = `mcp:${server.name}:${t.name}`
+          const savedConfig = savedConfigs.find((c: { id: string }) => c.id === toolId)
+          return {
+            id: toolId,
+            name: t.name,
+            description: t.description || `Tool from ${server.name}`,
+            enabled: savedConfig?.enabled ?? true,
+            requireApproval: savedConfig?.requireApproval ?? false,
+            source: 'mcp' as const,
+            mcpServerName: server.name
+          }
+        })
 
         setTools(prev => {
           const filtered = prev.filter(t => t.mcpServerName !== server.name)
@@ -429,6 +453,7 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
           color: agentColor,
           icon: agentIcon,
           model_default: agentModel,
+          default_workspace_path: agentWorkspacePath,
         })
         onOpenChange(false)
       } else if (targetAgentId) {
@@ -437,12 +462,25 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
           color: agentColor,
           icon: agentIcon,
           model_default: agentModel,
+          default_workspace_path: agentWorkspacePath,
         })
       }
     } catch (error) {
       console.error('Failed to save agent:', error)
     } finally {
       setSavingAgent(false)
+    }
+  }
+
+  // Select workspace folder for agent
+  async function handleSelectWorkspace() {
+    try {
+      const path = await window.api.workspace.select()
+      if (path) {
+        setAgentWorkspacePath(path)
+      }
+    } catch (error) {
+      console.error('Failed to select workspace:', error)
     }
   }
 
@@ -866,6 +904,50 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
                         </option>
                       ))}
                     </select>
+                  </div>
+
+                  {/* Default Workspace */}
+                  <div className="grid gap-2">
+                    <Label htmlFor="agent-workspace">Default Workspace</Label>
+                    <div className="flex gap-2">
+                      <div className="flex-1 flex items-center gap-2 px-3 py-2 border border-input rounded-md bg-background text-sm min-h-10">
+                        {agentWorkspacePath ? (
+                          <>
+                            <FolderOpen className="size-4 text-muted-foreground shrink-0" />
+                            <span className="truncate" title={agentWorkspacePath}>
+                              {agentWorkspacePath.split('/').pop() || agentWorkspacePath}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-muted-foreground">No folder selected</span>
+                        )}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleSelectWorkspace}
+                        className="shrink-0"
+                      >
+                        <FolderOpen className="size-4 mr-1" />
+                        Browse
+                      </Button>
+                      {agentWorkspacePath && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setAgentWorkspacePath(null)}
+                          className="shrink-0 text-muted-foreground hover:text-foreground"
+                          title="Clear workspace"
+                        >
+                          <XCircle className="size-4" />
+                        </Button>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      New threads will use this folder as their default workspace.
+                    </p>
                   </div>
 
                   {/* Save Agent Button */}

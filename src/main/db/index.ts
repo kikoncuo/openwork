@@ -140,6 +140,13 @@ export async function initializeDatabase(): Promise<SqlJsDatabase> {
     db.run(`ALTER TABLE threads ADD COLUMN agent_id TEXT REFERENCES agents(agent_id)`)
   }
 
+  // Add default_workspace_path column to agents if it doesn't exist
+  const agentColumns = db.exec("PRAGMA table_info(agents)")
+  const hasWorkspacePath = agentColumns[0]?.values?.some((col) => col[1] === 'default_workspace_path')
+  if (!hasWorkspacePath) {
+    db.run(`ALTER TABLE agents ADD COLUMN default_workspace_path TEXT`)
+  }
+
   // WhatsApp integration tables
   db.run(`
     CREATE TABLE IF NOT EXISTS whatsapp_auth_state (
@@ -247,6 +254,7 @@ export interface Agent {
   color: string
   icon: string
   model_default: string
+  default_workspace_path: string | null
   is_default: number  // SQLite uses 0/1 for boolean
   created_at: number
   updated_at: number

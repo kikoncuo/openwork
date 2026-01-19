@@ -7,6 +7,7 @@ import {
   updateThread as dbUpdateThread,
   deleteThread as dbDeleteThread
 } from '../db'
+import { getAgent, getDefaultAgent } from '../db/agents'
 import { getCheckpointer, closeCheckpointer } from '../agent/runtime'
 import { deleteThreadCheckpoint } from '../storage'
 import { generateTitle } from '../services/title-generator'
@@ -49,7 +50,18 @@ export function registerThreadHandlers(ipcMain: IpcMain) {
     const threadId = uuid()
     const title = (metadata?.title as string) || `Thread ${new Date().toLocaleDateString()}`
 
-    const thread = dbCreateThread(threadId, { ...metadata, title }, agentId)
+    // Get the agent to check for default workspace path
+    const agent = agentId ? getAgent(agentId) : getDefaultAgent()
+    const workspacePath = metadata?.workspacePath || agent?.default_workspace_path || null
+
+    // Merge the agent's default workspace into metadata
+    const finalMetadata = {
+      ...metadata,
+      title,
+      ...(workspacePath ? { workspacePath } : {})
+    }
+
+    const thread = dbCreateThread(threadId, finalMetadata, agentId)
 
     return {
       thread_id: thread.thread_id,

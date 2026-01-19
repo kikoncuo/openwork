@@ -316,6 +316,7 @@ const api = {
       color: string
       icon: string
       model_default: string
+      default_workspace_path: string | null
       is_default: number
       created_at: number
       updated_at: number
@@ -328,6 +329,7 @@ const api = {
       color: string
       icon: string
       model_default: string
+      default_workspace_path: string | null
       is_default: number
       created_at: number
       updated_at: number
@@ -340,6 +342,7 @@ const api = {
       color: string
       icon: string
       model_default: string
+      default_workspace_path: string | null
       is_default: number
       created_at: number
       updated_at: number
@@ -351,12 +354,14 @@ const api = {
       color?: string
       icon?: string
       model_default?: string
+      default_workspace_path?: string | null
     }): Promise<{
       agent_id: string
       name: string
       color: string
       icon: string
       model_default: string
+      default_workspace_path: string | null
       is_default: number
       created_at: number
       updated_at: number
@@ -368,12 +373,14 @@ const api = {
       color?: string
       icon?: string
       model_default?: string
+      default_workspace_path?: string | null
     }): Promise<{
       agent_id: string
       name: string
       color: string
       icon: string
       model_default: string
+      default_workspace_path: string | null
       is_default: number
       created_at: number
       updated_at: number

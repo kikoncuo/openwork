@@ -169,7 +169,7 @@ IMPORTANT: This tool only works if WhatsApp is connected in Settings > Apps.`,
       name: 'whatsapp_send_message',
       description: `Send a text message to a WhatsApp contact or group.
 You need the recipient's JID (from whatsapp_get_contacts or whatsapp_get_chats).
-CAUTION: This action requires human approval before executing.
+CAUTION: Never call this tool in parallel do it one by one.
 IMPORTANT: This tool only works if WhatsApp is connected in Settings > Apps.`,
       schema: z.object({
         to: z.string().describe('The JID of the recipient (e.g., "1234567890@s.whatsapp.net" for individual, "groupid@g.us" for group)'),

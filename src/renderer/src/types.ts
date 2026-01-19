@@ -21,6 +21,7 @@ export interface Agent {
   color: string
   icon: AgentIcon
   model_default: string
+  default_workspace_path: string | null
   is_default: boolean
   created_at: Date
   updated_at: Date
