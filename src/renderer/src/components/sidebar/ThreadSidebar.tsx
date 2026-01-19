@@ -15,7 +15,6 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger
 } from '@/components/ui/context-menu'
-import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { AgentIconComponent } from '@/lib/agent-icons'
 import type { Thread, Agent } from '@/types'
 
@@ -29,15 +28,17 @@ function ThreadLoadingIcon({ threadId }: { threadId: string }): React.JSX.Elemen
   return <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
 }
 
-// Agent color indicator dot
-function AgentDot({ agent }: { agent?: Agent }): React.JSX.Element | null {
+// Agent icon indicator with color
+function AgentIndicator({ agent }: { agent?: Agent }): React.JSX.Element | null {
   if (!agent) return null
   return (
     <div
-      className="size-2 rounded-full shrink-0"
-      style={{ backgroundColor: agent.color }}
+      className="shrink-0"
+      style={{ color: agent.color }}
       title={agent.name}
-    />
+    >
+      <AgentIconComponent icon={agent.icon} size={14} />
+    </div>
   )
 }
 
@@ -87,7 +88,7 @@ function ThreadListItem({
             }
           }}
         >
-          <AgentDot agent={agent} />
+          <AgentIndicator agent={agent} />
           <ThreadLoadingIcon threadId={thread.thread_id} />
           <div className="flex-1 min-w-0 overflow-hidden">
             {isEditing ? (
@@ -184,8 +185,7 @@ export function ThreadSidebar(): React.JSX.Element {
     selectThread,
     deleteThread,
     updateThread,
-    settingsOpen,
-    setSettingsOpen,
+    openSettings,
     agents,
     reassignThreadToAgent
   } = useAppStore()
@@ -271,15 +271,13 @@ export function ThreadSidebar(): React.JSX.Element {
             variant="ghost"
             size="sm"
             className="w-full justify-start gap-2"
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => openSettings()} // undefined = edit active agent
           >
             <Settings className="size-4" />
             Settings
           </Button>
         </div>
       </aside>
-
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </>
   )
 }

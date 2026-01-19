@@ -35,7 +35,7 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
 
-  const { loadThreads, generateTitleForFirstMessage } = useAppStore()
+  const { loadThreads, generateTitleForFirstMessage, activeAgentId, threads, reassignThreadToAgent } = useAppStore()
 
   // Get persisted thread state and actions from context
   const {
@@ -236,6 +236,12 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     setInput('')
 
     const isFirstMessage = threadMessages.length === 0
+
+    // Update thread's agent if it doesn't match the currently active agent
+    const currentThread = threads.find(t => t.thread_id === threadId)
+    if (activeAgentId && currentThread?.agent_id !== activeAgentId) {
+      await reassignThreadToAgent(threadId, activeAgentId)
+    }
 
     const userMessage: Message = {
       id: crypto.randomUUID(),

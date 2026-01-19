@@ -19,6 +19,8 @@ import type * as _lcLanggraph from '@langchain/langgraph'
 import type * as _lcZodTypes from '@langchain/core/utils/types'
 
 import { BASE_SYSTEM_PROMPT } from './system-prompt'
+import { createWhatsAppTools, getWhatsAppInterruptTools } from '../apps/whatsapp/tools'
+import { whatsappService } from '../apps/whatsapp'
 
 // Types for agent config
 interface LearnedInsight {
@@ -361,8 +363,22 @@ The insight will be added to your system prompt for all future interactions.`,
 
 The workspace root is: ${workspacePath}`
 
-  // Combine MCP tools with custom tools
-  const allTools = [...mcpTools, learnInsightTool]
+  // Add WhatsApp tools if connected
+  const whatsappTools = whatsappService.isConnected() ? createWhatsAppTools() : []
+  if (whatsappTools.length > 0) {
+    console.log('[Runtime] WhatsApp tools available:', whatsappTools.map((t) => t.name).join(', '))
+  }
+
+  // Combine MCP tools with custom tools and WhatsApp tools
+  const allTools = [...mcpTools, learnInsightTool, ...whatsappTools]
+
+  // Build interrupt list - execute always, plus WhatsApp send if connected
+  const interruptOn: Record<string, boolean> = { execute: true }
+  if (whatsappTools.length > 0) {
+    for (const toolName of getWhatsAppInterruptTools()) {
+      interruptOn[toolName] = true
+    }
+  }
 
   const agent = createDeepAgent({
     model,
@@ -373,8 +389,8 @@ The workspace root is: ${workspacePath}`
     tools: allTools.length > 0 ? allTools : undefined,
     // Custom filesystem prompt for absolute paths (requires deepagents update)
     filesystemSystemPrompt,
-    // Require human approval for all shell commands
-    interruptOn: { execute: true }
+    // Require human approval for shell commands and WhatsApp send
+    interruptOn
   } as Parameters<typeof createDeepAgent>[0])
 
   console.log('[Runtime] Deep agent created with LocalSandbox at:', workspacePath)
@@ -382,7 +398,11 @@ The workspace root is: ${workspacePath}`
   if (mcpTools.length > 0) {
     console.log('[Runtime] MCP tools available:', mcpTools.map((t) => t.name).join(', '))
   }
+  if (whatsappTools.length > 0) {
+    console.log('[Runtime] WhatsApp tools available:', whatsappTools.map((t) => t.name).join(', '))
+  }
   console.log('[Runtime] Total additional tools:', allTools.length)
+  console.log('[Runtime] Interrupt on tools:', Object.keys(interruptOn).join(', '))
   return agent
 }
 

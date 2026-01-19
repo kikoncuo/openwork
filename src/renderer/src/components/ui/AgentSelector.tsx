@@ -41,7 +41,7 @@ function AgentPill({ agent, isActive, onClick }: {
 }
 
 export function AgentSelector({ className }: AgentSelectorProps) {
-  const { agents, activeAgentId, setActiveAgent, openAgentEditor } = useAppStore()
+  const { agents, activeAgentId, setActiveAgent, openSettings } = useAppStore()
 
   return (
     <div className={cn("flex items-center gap-1.5", className)}>
@@ -54,11 +54,11 @@ export function AgentSelector({ className }: AgentSelectorProps) {
         />
       ))}
 
-      {/* Add new agent button */}
+      {/* Add new agent button - opens settings in create mode */}
       <button
         onClick={(e) => {
           e.stopPropagation()
-          openAgentEditor()
+          openSettings(null) // null = create new agent
         }}
         className="flex items-center justify-center size-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-sidebar-accent transition-colors shrink-0"
         title="Create new agent"

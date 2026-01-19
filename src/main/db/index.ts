@@ -140,10 +140,67 @@ export async function initializeDatabase(): Promise<SqlJsDatabase> {
     db.run(`ALTER TABLE threads ADD COLUMN agent_id TEXT REFERENCES agents(agent_id)`)
   }
 
+  // WhatsApp integration tables
+  db.run(`
+    CREATE TABLE IF NOT EXISTS whatsapp_auth_state (
+      key TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS whatsapp_contacts (
+      jid TEXT PRIMARY KEY,
+      name TEXT,
+      push_name TEXT,
+      phone_number TEXT,
+      is_group INTEGER DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS whatsapp_chats (
+      jid TEXT PRIMARY KEY,
+      name TEXT,
+      is_group INTEGER DEFAULT 0,
+      last_message_time INTEGER,
+      unread_count INTEGER DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS whatsapp_messages (
+      message_id TEXT PRIMARY KEY,
+      chat_jid TEXT NOT NULL,
+      from_jid TEXT NOT NULL,
+      from_me INTEGER DEFAULT 0,
+      timestamp INTEGER NOT NULL,
+      message_type TEXT,
+      content TEXT,
+      raw_message TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS app_connections (
+      app_id TEXT PRIMARY KEY,
+      enabled INTEGER DEFAULT 1,
+      connected INTEGER DEFAULT 0,
+      connection_data TEXT,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
   db.run(`CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_threads_agent_id ON threads(agent_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_runs_thread_id ON runs(thread_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_chat ON whatsapp_messages(chat_jid)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_timestamp ON whatsapp_messages(timestamp)`)
 
   saveToDisk()
 
@@ -201,6 +258,51 @@ export interface AgentConfig {
   mcp_servers: string | null   // JSON
   custom_prompt: string | null
   learned_insights: string | null  // JSON
+  updated_at: number
+}
+
+// WhatsApp types
+export interface WhatsAppAuthState {
+  key: string
+  data: string  // Encrypted JSON
+  updated_at: number
+}
+
+export interface WhatsAppContact {
+  jid: string
+  name: string | null
+  push_name: string | null
+  phone_number: string | null
+  is_group: number  // 0 or 1
+  updated_at: number
+}
+
+export interface WhatsAppChat {
+  jid: string
+  name: string | null
+  is_group: number  // 0 or 1
+  last_message_time: number | null
+  unread_count: number
+  updated_at: number
+}
+
+export interface WhatsAppMessage {
+  message_id: string
+  chat_jid: string
+  from_jid: string
+  from_me: number  // 0 or 1
+  timestamp: number
+  message_type: string | null
+  content: string | null
+  raw_message: string | null  // JSON
+  created_at: number
+}
+
+export interface AppConnection {
+  app_id: string
+  enabled: number  // 0 or 1
+  connected: number  // 0 or 1
+  connection_data: string | null  // JSON
   updated_at: number
 }
 

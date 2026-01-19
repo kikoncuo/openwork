@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Eye, EyeOff, Check, AlertCircle, Loader2, Plus, Trash2, Power, PowerOff, Wrench, Plug, RefreshCw, ShieldCheck, ShieldOff, XCircle, FileText, Sparkles, RotateCcw, Bot, Pencil } from 'lucide-react'
+import { Eye, EyeOff, Check, AlertCircle, Loader2, Plus, Trash2, Power, PowerOff, Wrench, Plug, RefreshCw, ShieldCheck, ShieldOff, XCircle, FileText, Sparkles, RotateCcw, Bot, AppWindow } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -12,12 +12,15 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { useAppStore } from '@/lib/store'
-import { AgentIconComponent } from '@/lib/agent-icons'
-import type { Agent } from '@/types'
+import { AgentIconComponent, AGENT_ICON_LABELS } from '@/lib/agent-icons'
+import { AppsTab } from './apps/AppsTab'
+import type { AgentIcon } from '@/types'
 
 interface SettingsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** If provided, edit this agent. If null, create new agent. If undefined, edit active agent. */
+  agentId?: string | null
 }
 
 interface ProviderConfig {
@@ -68,8 +71,9 @@ interface ToolConfig {
   description: string
   enabled: boolean
   requireApproval: boolean
-  source: 'builtin' | 'mcp'
+  source: 'builtin' | 'mcp' | 'app'
   mcpServerName?: string
+  appName?: string
 }
 
 interface LearnedInsight {
@@ -79,6 +83,19 @@ interface LearnedInsight {
   createdAt: string
   enabled: boolean
 }
+
+const AGENT_ICONS: AgentIcon[] = ['bot', 'sparkles', 'code', 'pen', 'search', 'terminal', 'brain', 'shield']
+
+const AGENT_COLORS = [
+  '#8B5CF6', // Purple (default)
+  '#3B82F6', // Blue
+  '#10B981', // Green
+  '#F59E0B', // Amber
+  '#EF4444', // Red
+  '#EC4899', // Pink
+  '#6366F1', // Indigo
+  '#14B8A6', // Teal
+]
 
 // Default built-in tools - matches deepagents tools
 const DEFAULT_TOOLS: ToolConfig[] = [
@@ -99,13 +116,43 @@ const DEFAULT_TOOLS: ToolConfig[] = [
   { id: 'learn_insight', name: 'Learn Insight', description: 'Save learned insights or preferences to remember for future conversations', enabled: true, requireApproval: false, source: 'builtin' },
 ]
 
-export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
-  const [activeTab, setActiveTab] = useState<'api-keys' | 'mcp' | 'tools' | 'prompt'>('api-keys')
+// Simple label component
+function Label({ htmlFor, children, className }: { htmlFor?: string; children: React.ReactNode; className?: string }) {
+  return (
+    <label htmlFor={htmlFor} className={`text-sm font-medium leading-none ${className || ''}`}>
+      {children}
+    </label>
+  )
+}
+
+export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: SettingsDialogProps) {
+  // Determine which agent to edit
+  const agents = useAppStore((s) => s.agents)
+  const activeAgentId = useAppStore((s) => s.activeAgentId)
+  const createAgent = useAppStore((s) => s.createAgent)
+  const updateAgent = useAppStore((s) => s.updateAgent)
+  const models = useAppStore((s) => s.models)
+
+  // null = creating new agent, string = editing existing agent
+  const isCreatingNew = propAgentId === null
+  const targetAgentId = propAgentId === undefined ? activeAgentId : propAgentId
+  const existingAgent = targetAgentId ? agents.find((a) => a.agent_id === targetAgentId) : null
+
+  const [activeTab, setActiveTab] = useState<'agent' | 'api-keys' | 'apps' | 'mcp' | 'tools' | 'prompt'>('agent')
+  const [loading, setLoading] = useState(true)
+
+  // Agent properties state
+  const [agentName, setAgentName] = useState('')
+  const [agentColor, setAgentColor] = useState(AGENT_COLORS[0])
+  const [agentIcon, setAgentIcon] = useState<AgentIcon>('bot')
+  const [agentModel, setAgentModel] = useState('')
+  const [savingAgent, setSavingAgent] = useState(false)
+
+  // API keys state (global, shared across agents)
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({})
   const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({})
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({})
   const [saving, setSaving] = useState<Record<string, boolean>>({})
-  const [loading, setLoading] = useState(true)
 
   // MCP state
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([])
@@ -125,17 +172,108 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const [insights, setInsights] = useState<LearnedInsight[]>([])
   const [newInsight, setNewInsight] = useState('')
 
-  // Load existing settings on mount
+  // Load settings when dialog opens
   useEffect(() => {
     if (open) {
       loadAllSettings()
     }
+  }, [open, targetAgentId, isCreatingNew])
+
+  // Listen for WhatsApp connection changes to reload tools
+  useEffect(() => {
+    if (!open) return
+
+    const cleanup = window.api.whatsapp.onConnectionChange(async (data) => {
+      console.log('[Settings] WhatsApp connection changed:', data)
+
+      // Filter out existing WhatsApp tools first
+      setTools(prevTools => {
+        const nonWhatsAppTools = prevTools.filter(t => !(t.source === 'app' && t.appName === 'WhatsApp'))
+
+        if (data.connected) {
+          // Load and add WhatsApp tools asynchronously
+          window.api.whatsapp.getTools().then(whatsappTools => {
+            console.log('[Settings] Connection change - loading WhatsApp tools:', whatsappTools)
+            const whatsappToolConfigs: ToolConfig[] = whatsappTools.map(t => ({
+              id: t.id,
+              name: t.name,
+              description: t.description,
+              enabled: true,
+              requireApproval: t.requireApproval,
+              source: 'app' as const,
+              appName: 'WhatsApp'
+            }))
+            setTools(current => {
+              const filtered = current.filter(tool => !(tool.source === 'app' && tool.appName === 'WhatsApp'))
+              return [...filtered, ...whatsappToolConfigs]
+            })
+          }).catch(e => console.error('Failed to load WhatsApp tools on connection change:', e))
+        }
+
+        return nonWhatsAppTools  // Immediately remove WhatsApp tools if disconnected
+      })
+    })
+
+    // Subscribe to connection events
+    window.api.whatsapp.subscribeConnection()
+
+    return () => {
+      cleanup()
+      window.api.whatsapp.unsubscribeConnection()
+    }
   }, [open])
+
+  // Reload WhatsApp tools when switching to Tools tab (ensures tools appear if loaded late)
+  useEffect(() => {
+    if (activeTab !== 'tools' || loading) return
+
+    // Check if WhatsApp is connected but tools aren't loaded yet
+    const checkAndLoadWhatsAppTools = async () => {
+      try {
+        const status = await window.api.whatsapp.getStatus()
+        if (status.connected) {
+          const hasWhatsAppTools = tools.some(t => t.source === 'app' && t.appName === 'WhatsApp')
+          if (!hasWhatsAppTools) {
+            console.log('[Settings] Tools tab: WhatsApp connected but no tools found, reloading...')
+            const whatsappTools = await window.api.whatsapp.getTools()
+            const whatsappToolConfigs: ToolConfig[] = whatsappTools.map(t => ({
+              id: t.id,
+              name: t.name,
+              description: t.description,
+              enabled: true,
+              requireApproval: t.requireApproval,
+              source: 'app' as const,
+              appName: 'WhatsApp'
+            }))
+            setTools(prev => [...prev.filter(t => !(t.source === 'app' && t.appName === 'WhatsApp')), ...whatsappToolConfigs])
+          }
+        }
+      } catch (e) {
+        console.error('Failed to check/load WhatsApp tools on tab switch:', e)
+      }
+    }
+
+    checkAndLoadWhatsAppTools()
+  }, [activeTab, loading, tools])
 
   async function loadAllSettings() {
     setLoading(true)
 
-    // Load API keys
+    // Load agent properties
+    if (existingAgent) {
+      setAgentName(existingAgent.name)
+      setAgentColor(existingAgent.color)
+      setAgentIcon(existingAgent.icon)
+      setAgentModel(existingAgent.model_default)
+    } else {
+      // New agent defaults
+      setAgentName('')
+      setAgentColor(AGENT_COLORS[0])
+      setAgentIcon('bot')
+      setAgentModel(models[0]?.id || '')
+    }
+
+    // Load API keys (global)
     const keys: Record<string, string> = {}
     const saved: Record<string, boolean> = {}
 
@@ -143,14 +281,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       try {
         const key = await window.api.models.getApiKey(provider.id)
         if (key) {
-          // Show masked version
           keys[provider.id] = '••••••••••••••••'
           saved[provider.id] = true
         } else {
           keys[provider.id] = ''
           saved[provider.id] = false
         }
-      } catch (e) {
+      } catch {
         keys[provider.id] = ''
         saved[provider.id] = false
       }
@@ -159,20 +296,43 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     setApiKeys(keys)
     setSavedKeys(saved)
 
-    // Load tool configs first, then MCP servers (to avoid race condition)
-    let mergedTools = [...DEFAULT_TOOLS]
+    // Load tool configs
+    let mergedTools: ToolConfig[] = [...DEFAULT_TOOLS]
     try {
       const configs = await window.api.tools.getConfigs()
       if (configs.length > 0) {
-        // Merge saved configs with defaults
         mergedTools = DEFAULT_TOOLS.map((t) => {
-          const saved = configs.find((c: { id: string }) => c.id === t.id)
-          return saved ? { ...t, enabled: saved.enabled, requireApproval: saved.requireApproval ?? t.requireApproval } : t
+          const savedConfig = configs.find((c: { id: string }) => c.id === t.id)
+          return savedConfig ? { ...t, enabled: savedConfig.enabled, requireApproval: savedConfig.requireApproval ?? t.requireApproval } : t
         })
       }
     } catch (e) {
       console.error('Failed to load tool configs:', e)
     }
+
+    // Load WhatsApp tools if connected
+    try {
+      const whatsappStatus = await window.api.whatsapp.getStatus()
+      console.log('[Settings] WhatsApp status:', whatsappStatus)
+      if (whatsappStatus.connected) {
+        const whatsappTools = await window.api.whatsapp.getTools()
+        console.log('[Settings] WhatsApp tools loaded:', whatsappTools)
+        const whatsappToolConfigs: ToolConfig[] = whatsappTools.map(t => ({
+          id: t.id,
+          name: t.name,
+          description: t.description,
+          enabled: true,
+          requireApproval: t.requireApproval,
+          source: 'app' as const,
+          appName: 'WhatsApp'
+        }))
+        mergedTools = [...mergedTools, ...whatsappToolConfigs]
+        console.log('[Settings] Merged tools with WhatsApp:', mergedTools.length)
+      }
+    } catch (e) {
+      console.error('Failed to load WhatsApp tools:', e)
+    }
+
     setTools(mergedTools)
 
     // Load MCP servers and test connections
@@ -180,10 +340,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       const servers = await window.api.mcp.list()
       setMcpServers(servers)
 
-      // Test connections for enabled servers (run in parallel)
       const enabledServers = servers.filter(s => s.enabled)
       if (enabledServers.length > 0) {
-        // Test connections - this will add MCP tools to state
         await Promise.all(enabledServers.map(server => testMcpConnection(server)))
       }
     } catch (e) {
@@ -227,7 +385,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           [server.id]: { status: 'connected', tools: result.tools }
         }))
 
-        // Add MCP tools to tools list
         const mcpTools: ToolConfig[] = result.tools.map(t => ({
           id: `mcp:${server.name}:${t.name}`,
           name: t.name,
@@ -239,7 +396,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         }))
 
         setTools(prev => {
-          // Remove old tools from this server and add new ones
           const filtered = prev.filter(t => t.mcpServerName !== server.name)
           return [...filtered, ...mcpTools]
         })
@@ -261,6 +417,36 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     }
   }
 
+  // Agent save handler
+  async function handleSaveAgent() {
+    if (!agentName.trim()) return
+
+    setSavingAgent(true)
+    try {
+      if (isCreatingNew) {
+        await createAgent({
+          name: agentName.trim(),
+          color: agentColor,
+          icon: agentIcon,
+          model_default: agentModel,
+        })
+        onOpenChange(false)
+      } else if (targetAgentId) {
+        await updateAgent(targetAgentId, {
+          name: agentName.trim(),
+          color: agentColor,
+          icon: agentIcon,
+          model_default: agentModel,
+        })
+      }
+    } catch (error) {
+      console.error('Failed to save agent:', error)
+    } finally {
+      setSavingAgent(false)
+    }
+  }
+
+  // API key handlers
   async function saveApiKey(providerId: string) {
     const key = apiKeys[providerId]
     if (!key || key === '••••••••••••••••') return
@@ -280,7 +466,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   }
 
   function handleKeyChange(providerId: string, value: string) {
-    // If user starts typing on a masked field, clear it
     if (apiKeys[providerId] === '••••••••••••••••' && value.length > 16) {
       value = value.slice(16)
     }
@@ -308,10 +493,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     setNewMcpCommand('')
     setNewMcpArgs('')
 
-    // Persist to backend
     try {
       await window.api.mcp.save(updated)
-      // Test the new connection
       testMcpConnection(newServer)
     } catch (e) {
       console.error('Failed to save MCP server:', e)
@@ -323,18 +506,15 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     const updated = mcpServers.filter((s) => s.id !== id)
     setMcpServers(updated)
 
-    // Remove tools from this server
     if (server) {
       setTools(prev => prev.filter(t => t.mcpServerName !== server.name))
     }
 
-    // Remove status
     setMcpStatus(prev => {
       const { [id]: _, ...rest } = prev
       return rest
     })
 
-    // Persist to backend
     try {
       await window.api.mcp.save(updated)
     } catch (e) {
@@ -349,15 +529,12 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     )
     setMcpServers(updated)
 
-    // Persist to backend
     try {
       await window.api.mcp.save(updated)
 
-      // If enabling, test connection
       if (server && !server.enabled) {
         testMcpConnection({ ...server, enabled: true })
       } else if (server) {
-        // If disabling, remove tools and status
         setTools(prev => prev.filter(t => t.mcpServerName !== server.name))
         setMcpStatus(prev => {
           const { [id]: _, ...rest } = prev
@@ -376,7 +553,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     )
     setTools(updated)
 
-    // Persist to backend
     try {
       await window.api.tools.saveConfigs(updated.map((t) => ({
         id: t.id,
@@ -394,7 +570,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     )
     setTools(updated)
 
-    // Persist to backend
     try {
       await window.api.tools.saveConfigs(updated.map((t) => ({
         id: t.id,
@@ -408,6 +583,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
   const builtinTools = tools.filter(t => t.source === 'builtin')
   const mcpTools = tools.filter(t => t.source === 'mcp')
+  const appTools = tools.filter(t => t.source === 'app')
 
   // Prompt handlers
   async function saveCustomPrompt() {
@@ -475,18 +651,40 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     return <XCircle className="size-4 text-status-critical" />
   }
 
+  const dialogTitle = isCreatingNew
+    ? 'Create New Agent'
+    : existingAgent
+      ? `Settings - ${existingAgent.name}`
+      : 'Settings'
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[650px] h-[80vh] flex flex-col overflow-hidden">
         <DialogHeader>
-          <DialogTitle>Settings</DialogTitle>
+          <DialogTitle>{dialogTitle}</DialogTitle>
           <DialogDescription>
-            Configure your AI assistant's capabilities and connections.
+            {isCreatingNew
+              ? 'Create a new agent with custom settings.'
+              : 'Configure your agent\'s capabilities and connections.'}
           </DialogDescription>
         </DialogHeader>
 
         {/* Tab navigation */}
         <div className="flex gap-1 border-b border-border">
+          <button
+            onClick={() => setActiveTab('agent')}
+            className={`px-4 py-2 text-sm font-medium transition-colors relative flex items-center gap-2 ${
+              activeTab === 'agent'
+                ? 'text-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Bot className="size-4" />
+            Agent
+            {activeTab === 'agent' && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+            )}
+          </button>
           <button
             onClick={() => setActiveTab('api-keys')}
             className={`px-4 py-2 text-sm font-medium transition-colors relative ${
@@ -501,6 +699,20 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             )}
           </button>
           <button
+            onClick={() => setActiveTab('apps')}
+            className={`px-4 py-2 text-sm font-medium transition-colors relative flex items-center gap-2 ${
+              activeTab === 'apps'
+                ? 'text-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <AppWindow className="size-4" />
+            Apps
+            {activeTab === 'apps' && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+            )}
+          </button>
+          <button
             onClick={() => setActiveTab('mcp')}
             className={`px-4 py-2 text-sm font-medium transition-colors relative flex items-center gap-2 ${
               activeTab === 'mcp'
@@ -509,7 +721,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             }`}
           >
             <Plug className="size-4" />
-            MCP Servers
+            MCP
             {activeTab === 'mcp' && (
               <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
             )}
@@ -555,10 +767,131 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto pr-2">
+          {/* Agent Tab */}
+          {activeTab === 'agent' && (
+            <div className="space-y-6 py-4">
+              <div className="text-section-header">AGENT PROPERTIES</div>
+
+              {loading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="size-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Name */}
+                  <div className="grid gap-2">
+                    <Label htmlFor="agent-name">Name</Label>
+                    <Input
+                      id="agent-name"
+                      value={agentName}
+                      onChange={(e) => setAgentName(e.target.value)}
+                      placeholder="Enter agent name..."
+                    />
+                  </div>
+
+                  {/* Icon */}
+                  <div className="grid gap-2">
+                    <Label>Icon</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {AGENT_ICONS.map((iconOption) => (
+                        <button
+                          key={iconOption}
+                          type="button"
+                          onClick={() => setAgentIcon(iconOption)}
+                          className={`flex items-center justify-center w-10 h-10 rounded-lg border-2 transition-colors ${
+                            agentIcon === iconOption
+                              ? 'border-primary bg-primary/10'
+                              : 'border-border hover:border-primary/50'
+                          }`}
+                          title={AGENT_ICON_LABELS[iconOption]}
+                        >
+                          <AgentIconComponent icon={iconOption} size={20} />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Color */}
+                  <div className="grid gap-2">
+                    <Label>Color</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {AGENT_COLORS.map((colorOption) => (
+                        <button
+                          key={colorOption}
+                          type="button"
+                          onClick={() => setAgentColor(colorOption)}
+                          className={`w-8 h-8 rounded-full border-2 transition-all ${
+                            agentColor === colorOption
+                              ? 'border-white scale-110'
+                              : 'border-transparent hover:scale-105'
+                          }`}
+                          style={{ backgroundColor: colorOption }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Preview */}
+                  <div className="grid gap-2">
+                    <Label>Preview</Label>
+                    <div className="flex items-center justify-center p-4 rounded-lg bg-background border">
+                      <div
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-md"
+                        style={{
+                          backgroundColor: `${agentColor}15`,
+                          border: `1px solid ${agentColor}50`,
+                          color: agentColor,
+                        }}
+                      >
+                        <AgentIconComponent icon={agentIcon} size={16} />
+                        <span className="font-bold uppercase tracking-wider text-sm">
+                          {agentName || 'Agent Name'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Default Model */}
+                  <div className="grid gap-2">
+                    <Label htmlFor="agent-model">Default Model</Label>
+                    <select
+                      id="agent-model"
+                      value={agentModel}
+                      onChange={(e) => setAgentModel(e.target.value)}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    >
+                      {models.map((model) => (
+                        <option key={model.id} value={model.id} disabled={!model.available}>
+                          {model.name} {!model.available && '(No API Key)'}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Save Agent Button */}
+                  <div className="flex justify-end pt-2">
+                    <Button
+                      onClick={handleSaveAgent}
+                      disabled={!agentName.trim() || savingAgent}
+                    >
+                      {savingAgent ? (
+                        <Loader2 className="size-4 animate-spin mr-2" />
+                      ) : null}
+                      {isCreatingNew ? 'Create Agent' : 'Save Changes'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* API Keys Tab */}
           {activeTab === 'api-keys' && (
             <div className="space-y-6 py-4">
               <div className="text-section-header">API KEYS</div>
+              <p className="text-xs text-muted-foreground">
+                API keys are shared across all agents.
+              </p>
 
               {loading ? (
                 <div className="flex items-center justify-center py-8">
@@ -631,6 +964,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
               )}
             </div>
           )}
+
+          {/* Apps Tab */}
+          {activeTab === 'apps' && <AppsTab />}
 
           {/* MCP Servers Tab */}
           {activeTab === 'mcp' && (
@@ -749,7 +1085,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                           </div>
                         </div>
 
-                        {/* Status/Error display */}
                         {server.enabled && status && (
                           <div className="mt-2 pt-2 border-t border-border/50">
                             {status.status === 'testing' && (
@@ -921,6 +1256,76 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                       <Loader2 className="size-5 mx-auto mb-2 animate-spin opacity-50" />
                       <p>Connecting to MCP servers...</p>
                     </div>
+                  </div>
+                </>
+              )}
+
+              {/* App-provided tools section */}
+              {appTools.length > 0 && (
+                <>
+                  <Separator />
+                  <div>
+                    <div className="text-section-header mb-2">APP TOOLS</div>
+                    <p className="text-xs text-muted-foreground mb-4">
+                      Tools provided by your connected apps. Toggle approval to require confirmation before execution.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    {appTools.map((tool) => (
+                      <div
+                        key={tool.id}
+                        className={`flex items-center justify-between p-3 border rounded-sm transition-colors ${
+                          tool.enabled
+                            ? 'border-border bg-background-elevated'
+                            : 'border-border/50 bg-background opacity-60'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                          <div className={`p-1.5 rounded ${tool.enabled ? 'bg-status-nominal/20' : 'bg-muted'}`}>
+                            <AppWindow className={`size-4 ${tool.enabled ? 'text-status-nominal' : 'text-muted-foreground'}`} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-sm">{tool.name}</span>
+                              <span className="text-xs px-1.5 py-0.5 bg-status-nominal/10 rounded text-status-nominal">
+                                {tool.appName}
+                              </span>
+                            </div>
+                            <div className="text-xs text-muted-foreground truncate">{tool.description}</div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          {tool.enabled && (
+                            <button
+                              onClick={() => toggleToolApproval(tool.id)}
+                              className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
+                                tool.requireApproval
+                                  ? 'bg-status-warning/20 text-status-warning'
+                                  : 'bg-muted text-muted-foreground hover:text-foreground'
+                              }`}
+                              title={tool.requireApproval ? 'Approval required' : 'No approval needed'}
+                            >
+                              {tool.requireApproval ? (
+                                <>
+                                  <ShieldCheck className="size-3" />
+                                  Approval
+                                </>
+                              ) : (
+                                <>
+                                  <ShieldOff className="size-3" />
+                                  Auto
+                                </>
+                              )}
+                            </button>
+                          )}
+                          <Switch
+                            checked={tool.enabled}
+                            onCheckedChange={() => toggleTool(tool.id)}
+                          />
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </>
               )}

@@ -4,7 +4,7 @@ import { TabbedPanel, TabBar } from '@/components/tabs'
 import { RightPanel } from '@/components/panels/RightPanel'
 import { ResizeHandle } from '@/components/ui/resizable'
 import { AgentBadge } from '@/components/ui/AgentBadge'
-import { AgentEditorDialog } from '@/components/settings/AgentEditorDialog'
+import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { useAppStore } from '@/lib/store'
 import { ThreadProvider } from '@/lib/thread-context'
 
@@ -18,7 +18,7 @@ const RIGHT_MAX = 450
 const RIGHT_DEFAULT = 320
 
 function App(): React.JSX.Element {
-  const { currentThreadId, loadThreads, createThread, loadAgents, agentEditorOpen, closeAgentEditor, editingAgentId } = useAppStore()
+  const { currentThreadId, loadThreads, createThread, loadAgents, settingsOpen, closeSettings, settingsAgentId } = useAppStore()
   const [isLoading, setIsLoading] = useState(true)
   const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT)
   const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT)
@@ -138,11 +138,11 @@ function App(): React.JSX.Element {
         }}
       />
 
-      {/* Agent Editor Dialog */}
-      <AgentEditorDialog
-        open={agentEditorOpen}
-        onOpenChange={(open) => !open && closeAgentEditor()}
-        agentId={editingAgentId}
+      {/* Settings Dialog - per-agent settings */}
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={(open) => !open && closeSettings()}
+        agentId={settingsAgentId}
       />
 
       {/* Left + Center column */}

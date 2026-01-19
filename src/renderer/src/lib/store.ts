@@ -19,8 +19,8 @@ interface AppState {
 
   // Settings dialog state
   settingsOpen: boolean
-  agentEditorOpen: boolean
-  editingAgentId: string | null
+  /** null = create new agent, string = edit specific agent, undefined = edit active agent */
+  settingsAgentId: string | null | undefined
 
   // Sidebar state
   sidebarCollapsed: boolean
@@ -31,8 +31,9 @@ interface AppState {
   createAgent: (input: { name: string; color?: string; icon?: string; model_default?: string }) => Promise<Agent>
   updateAgent: (agentId: string, updates: { name?: string; color?: string; icon?: string; model_default?: string }) => Promise<Agent | null>
   deleteAgent: (agentId: string) => Promise<{ success: boolean; error?: string; reassignedThreads?: number }>
-  openAgentEditor: (agentId?: string) => void
-  closeAgentEditor: () => void
+  /** Open settings. null = create new agent, string = edit specific agent, undefined = edit active agent */
+  openSettings: (agentId?: string | null) => void
+  closeSettings: () => void
 
   // Thread actions
   loadThreads: () => Promise<void>
@@ -52,7 +53,7 @@ interface AppState {
   // Panel actions
   setRightPanelTab: (tab: 'todos' | 'files' | 'subagents') => void
 
-  // Settings actions
+  // Deprecated - use openSettings/closeSettings instead
   setSettingsOpen: (open: boolean) => void
 
   // Sidebar actions
@@ -70,8 +71,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   providers: [],
   rightPanelTab: 'todos',
   settingsOpen: false,
-  agentEditorOpen: false,
-  editingAgentId: null,
+  settingsAgentId: undefined,
   sidebarCollapsed: false,
 
   // Agent actions
@@ -145,12 +145,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     return result
   },
 
-  openAgentEditor: (agentId?: string) => {
-    set({ agentEditorOpen: true, editingAgentId: agentId || null })
+  openSettings: (agentId?: string | null) => {
+    set({ settingsOpen: true, settingsAgentId: agentId })
   },
 
-  closeAgentEditor: () => {
-    set({ agentEditorOpen: false, editingAgentId: null })
+  closeSettings: () => {
+    set({ settingsOpen: false, settingsAgentId: undefined })
   },
 
   // Thread actions
@@ -264,9 +264,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ rightPanelTab: tab })
   },
 
-  // Settings actions
+  // Settings actions (deprecated - use openSettings/closeSettings)
   setSettingsOpen: (open: boolean) => {
-    set({ settingsOpen: open })
+    if (open) {
+      set({ settingsOpen: true, settingsAgentId: undefined })
+    } else {
+      set({ settingsOpen: false, settingsAgentId: undefined })
+    }
   },
 
   // Sidebar actions

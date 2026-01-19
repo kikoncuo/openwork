@@ -421,6 +421,118 @@ const api = {
     getColors: (): Promise<string[]> => {
       return ipcRenderer.invoke('agents:getColors')
     }
+  },
+  whatsapp: {
+    // Connection management
+    connect: (): Promise<string | null> => {
+      return ipcRenderer.invoke('whatsapp:connect')
+    },
+    disconnect: (): Promise<void> => {
+      return ipcRenderer.invoke('whatsapp:disconnect')
+    },
+    getStatus: (): Promise<{
+      connected: boolean
+      phoneNumber: string | null
+      connectedAt: number | null
+    }> => {
+      return ipcRenderer.invoke('whatsapp:getStatus')
+    },
+    isConnected: (): Promise<boolean> => {
+      return ipcRenderer.invoke('whatsapp:isConnected')
+    },
+    // Data access
+    getContacts: (query?: string): Promise<Array<{
+      jid: string
+      name: string | null
+      pushName: string | null
+      phoneNumber: string | null
+      isGroup: boolean
+    }>> => {
+      return ipcRenderer.invoke('whatsapp:getContacts', query)
+    },
+    getChats: (limit?: number): Promise<Array<{
+      jid: string
+      name: string | null
+      isGroup: boolean
+      lastMessageTime: number | null
+      unreadCount: number
+    }>> => {
+      return ipcRenderer.invoke('whatsapp:getChats', limit)
+    },
+    searchMessages: (query: string, chatJid?: string, limit?: number): Promise<Array<{
+      id: string
+      from: string
+      to: string
+      fromMe: boolean
+      timestamp: number
+      type: string
+      content: string | null
+      isGroup: boolean
+      senderName?: string
+    }>> => {
+      return ipcRenderer.invoke('whatsapp:searchMessages', query, chatJid, limit)
+    },
+    getHistory: (chatJid: string, limit?: number): Promise<Array<{
+      id: string
+      from: string
+      to: string
+      fromMe: boolean
+      timestamp: number
+      type: string
+      content: string | null
+      isGroup: boolean
+      senderName?: string
+    }>> => {
+      return ipcRenderer.invoke('whatsapp:getHistory', chatJid, limit)
+    },
+    // Actions
+    sendMessage: (to: string, text: string): Promise<{
+      messageId: string
+      timestamp: number
+    }> => {
+      return ipcRenderer.invoke('whatsapp:sendMessage', to, text)
+    },
+    // Event subscriptions
+    subscribeQR: (): Promise<void> => {
+      return ipcRenderer.invoke('whatsapp:subscribeQR')
+    },
+    unsubscribeQR: (): Promise<void> => {
+      return ipcRenderer.invoke('whatsapp:unsubscribeQR')
+    },
+    subscribeConnection: (): Promise<void> => {
+      return ipcRenderer.invoke('whatsapp:subscribeConnection')
+    },
+    unsubscribeConnection: (): Promise<void> => {
+      return ipcRenderer.invoke('whatsapp:unsubscribeConnection')
+    },
+    // Event listeners
+    onQRCode: (callback: (qr: string) => void): (() => void) => {
+      const handler = (_: unknown, qr: string): void => {
+        callback(qr)
+      }
+      ipcRenderer.on('whatsapp:qrCode', handler)
+      return () => {
+        ipcRenderer.removeListener('whatsapp:qrCode', handler)
+      }
+    },
+    onConnectionChange: (callback: (data: { connected: boolean; phoneNumber?: string }) => void): (() => void) => {
+      const handler = (_: unknown, data: { connected: boolean; phoneNumber?: string }): void => {
+        callback(data)
+      }
+      ipcRenderer.on('whatsapp:connectionChange', handler)
+      return () => {
+        ipcRenderer.removeListener('whatsapp:connectionChange', handler)
+      }
+    },
+    // Tools info for UI
+    getTools: (): Promise<Array<{
+      id: string
+      name: string
+      description: string
+      requireApproval: boolean
+    }>> => {
+      return ipcRenderer.invoke('whatsapp:getTools')
+    }
   }
 }
 
