@@ -1,5 +1,7 @@
+packages:
+  - 'packages/*'
+
 allowedDeprecatedVersions:
   boolean: '*'
 onlyBuiltDependencies:
-  - electron
   - esbuild

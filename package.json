@@ -43,7 +43,13 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build"
+    "build": "npm run typecheck && electron-vite build",
+    "web:dev": "pnpm --filter @openwork/server dev & pnpm --filter @openwork/web dev",
+    "web:dev:server": "pnpm --filter @openwork/server dev",
+    "web:dev:client": "pnpm --filter @openwork/web dev",
+    "web:build": "pnpm --filter @openwork/server build && pnpm --filter @openwork/web build",
+    "web:start": "pnpm --filter @openwork/server start",
+    "web:install": "pnpm --filter @openwork/server install && pnpm --filter @openwork/web install"
   },
   "dependencies": {
     "@types/qrcode": "^1.5.5",

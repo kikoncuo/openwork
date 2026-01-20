@@ -1,0 +1,396 @@
+/**
+ * E2B Sandbox: Execute code in secure cloud sandboxes.
+ *
+ * Uses E2B Code Interpreter SDK to run code in isolated cloud environments.
+ * Implements the same interface as LocalSandbox for drop-in replacement.
+ */
+
+import { Sandbox } from '@e2b/code-interpreter'
+import type { ExecuteResponse, SandboxBackendProtocol, FileEntry, GrepMatch, EditResult } from 'deepagents'
+
+// E2B API key from environment
+const E2B_API_KEY = process.env.E2B_API_KEY
+
+if (!E2B_API_KEY) {
+  console.warn('[E2B] Warning: E2B_API_KEY not set. E2B sandbox will not work.')
+}
+
+/**
+ * Options for E2B sandbox configuration.
+ */
+export interface E2bSandboxOptions {
+  /** Existing sandbox ID to reconnect to (optional) */
+  sandboxId?: string
+  /** Timeout in milliseconds (default: 300000 = 5 minutes) */
+  timeout?: number
+}
+
+/**
+ * E2B sandbox backend with cloud-based code execution.
+ *
+ * Implements SandboxBackendProtocol with all file operations (ls, read, write,
+ * edit, glob, grep) and execute() for running shell commands in cloud VMs.
+ */
+export class E2bSandbox implements SandboxBackendProtocol {
+  /** Unique identifier for this sandbox instance */
+  readonly id: string
+
+  private sandbox: Sandbox | null = null
+  private readonly timeout: number
+  private sandboxId: string | null = null
+  private initialized: boolean = false
+
+  constructor(options: E2bSandboxOptions = {}) {
+    this.id = `e2b-sandbox-${Date.now()}`
+    this.sandboxId = options.sandboxId || null
+    this.timeout = options.timeout ?? 300_000 // 5 minutes default
+  }
+
+  /**
+   * Initialize the sandbox - creates new or reconnects to existing.
+   * Must be called before using the sandbox.
+   */
+  async initialize(): Promise<void> {
+    if (this.initialized && this.sandbox) {
+      return
+    }
+
+    if (!E2B_API_KEY) {
+      throw new Error('E2B_API_KEY environment variable is not set')
+    }
+
+    try {
+      if (this.sandboxId) {
+        // Reconnect to existing sandbox
+        console.log(`[E2B] Reconnecting to sandbox: ${this.sandboxId}`)
+        this.sandbox = await Sandbox.connect(this.sandboxId, { apiKey: E2B_API_KEY })
+      } else {
+        // Create new sandbox
+        console.log('[E2B] Creating new sandbox')
+        this.sandbox = await Sandbox.create({ apiKey: E2B_API_KEY })
+        this.sandboxId = this.sandbox.sandboxId
+      }
+      this.initialized = true
+      console.log(`[E2B] Sandbox ready: ${this.sandboxId}`)
+    } catch (error) {
+      console.error('[E2B] Failed to initialize sandbox:', error)
+      throw error
+    }
+  }
+
+  /**
+   * Get the sandbox ID for persistence.
+   */
+  getSandboxId(): string | null {
+    return this.sandboxId
+  }
+
+  /**
+   * Ensure sandbox is initialized before operations.
+   */
+  private async ensureInitialized(): Promise<Sandbox> {
+    if (!this.sandbox || !this.initialized) {
+      await this.initialize()
+    }
+    if (!this.sandbox) {
+      throw new Error('Sandbox not initialized')
+    }
+    return this.sandbox
+  }
+
+  /**
+   * Execute a shell command in the sandbox.
+   */
+  async execute(command: string): Promise<ExecuteResponse> {
+    if (!command || typeof command !== 'string') {
+      return {
+        output: 'Error: Shell tool expects a non-empty command string.',
+        exitCode: 1,
+        truncated: false
+      }
+    }
+
+    try {
+      const sandbox = await this.ensureInitialized()
+
+      const result = await sandbox.commands.run(command, {
+        timeoutMs: this.timeout
+      })
+
+      let output = ''
+      if (result.stdout) {
+        output += result.stdout
+      }
+      if (result.stderr) {
+        // Prefix stderr lines
+        const stderrLines = result.stderr.split('\n')
+          .filter(line => line.length > 0)
+          .map(line => `[stderr] ${line}`)
+          .join('\n')
+        if (stderrLines) {
+          output += (output ? '\n' : '') + stderrLines
+        }
+      }
+
+      if (!output.trim()) {
+        output = '<no output>'
+      }
+
+      return {
+        output,
+        exitCode: result.exitCode,
+        truncated: false
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      return {
+        output: `Error: ${message}`,
+        exitCode: 1,
+        truncated: false
+      }
+    }
+  }
+
+  /**
+   * List directory contents.
+   */
+  async ls(path: string): Promise<string[]> {
+    try {
+      const sandbox = await this.ensureInitialized()
+      const entries = await sandbox.files.list(path)
+      return entries.map(e => e.name)
+    } catch (error) {
+      console.error('[E2B] ls error:', error)
+      return []
+    }
+  }
+
+  /**
+   * Read a file's contents.
+   */
+  async read(path: string): Promise<string> {
+    try {
+      const sandbox = await this.ensureInitialized()
+      const content = await sandbox.files.read(path)
+      return content
+    } catch (error) {
+      throw new Error(`Failed to read file: ${path}`)
+    }
+  }
+
+  /**
+   * Write content to a file.
+   */
+  async write(path: string, content: string): Promise<void> {
+    try {
+      const sandbox = await this.ensureInitialized()
+      await sandbox.files.write(path, content)
+    } catch (error) {
+      throw new Error(`Failed to write file: ${path}`)
+    }
+  }
+
+  /**
+   * Edit a file using search and replace.
+   */
+  async edit(path: string, searchReplace: Array<{ search: string; replace: string }>): Promise<EditResult> {
+    try {
+      const sandbox = await this.ensureInitialized()
+
+      // Read current content
+      const content = await sandbox.files.read(path)
+      let newContent = content
+
+      // Apply replacements
+      for (const { search, replace } of searchReplace) {
+        newContent = newContent.replace(search, replace)
+      }
+
+      // Write back
+      await sandbox.files.write(path, newContent)
+
+      return {
+        success: true,
+        oldContent: content,
+        newContent
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      return {
+        success: false,
+        error: message
+      }
+    }
+  }
+
+  /**
+   * Find files matching a glob pattern.
+   */
+  async glob(pattern: string, cwd?: string): Promise<string[]> {
+    try {
+      const sandbox = await this.ensureInitialized()
+
+      // Use find command for glob matching
+      const basePath = cwd || '/home/user'
+      const result = await sandbox.commands.run(`find ${basePath} -name "${pattern}" -type f 2>/dev/null || true`)
+
+      if (!result.stdout?.trim()) {
+        return []
+      }
+
+      return result.stdout.trim().split('\n').filter(Boolean)
+    } catch (error) {
+      console.error('[E2B] glob error:', error)
+      return []
+    }
+  }
+
+  /**
+   * Search for text in files.
+   */
+  async grep(pattern: string, pathOrGlob?: string, options?: { maxMatches?: number }): Promise<GrepMatch[]> {
+    try {
+      const sandbox = await this.ensureInitialized()
+
+      const basePath = pathOrGlob || '/home/user'
+      const maxMatches = options?.maxMatches || 100
+
+      // Use grep command
+      const result = await sandbox.commands.run(
+        `grep -rn "${pattern}" ${basePath} 2>/dev/null | head -n ${maxMatches} || true`
+      )
+
+      if (!result.stdout?.trim()) {
+        return []
+      }
+
+      // Parse grep output: filename:line_number:content
+      const matches: GrepMatch[] = []
+      for (const line of result.stdout.trim().split('\n')) {
+        const match = line.match(/^([^:]+):(\d+):(.*)$/)
+        if (match) {
+          matches.push({
+            path: match[1],
+            line: parseInt(match[2], 10),
+            content: match[3]
+          })
+        }
+      }
+
+      return matches
+    } catch (error) {
+      console.error('[E2B] grep error:', error)
+      return []
+    }
+  }
+
+  /**
+   * Upload a file to the sandbox.
+   */
+  async uploadFile(localPath: string, remotePath: string, content: string): Promise<void> {
+    try {
+      const sandbox = await this.ensureInitialized()
+      await sandbox.files.write(remotePath, content)
+      console.log(`[E2B] Uploaded file to: ${remotePath}`)
+    } catch (error) {
+      console.error('[E2B] Upload error:', error)
+      throw error
+    }
+  }
+
+  /**
+   * List files with details.
+   */
+  async listFiles(path: string): Promise<FileEntry[]> {
+    try {
+      const sandbox = await this.ensureInitialized()
+      const entries = await sandbox.files.list(path)
+
+      return entries.map(e => ({
+        name: e.name,
+        path: `${path}/${e.name}`,
+        isDirectory: e.type === 'dir',
+        size: 0, // E2B doesn't provide size in list
+        modifiedAt: new Date().toISOString()
+      }))
+    } catch (error) {
+      console.error('[E2B] listFiles error:', error)
+      return []
+    }
+  }
+
+  /**
+   * Close the sandbox connection.
+   * Note: This doesn't destroy the sandbox - it can be reconnected later.
+   */
+  async close(): Promise<void> {
+    if (this.sandbox) {
+      try {
+        // Keep the sandbox alive for reconnection - don't kill it
+        console.log(`[E2B] Closing connection to sandbox: ${this.sandboxId}`)
+        this.sandbox = null
+        this.initialized = false
+      } catch (error) {
+        console.error('[E2B] Error closing sandbox:', error)
+      }
+    }
+  }
+
+  /**
+   * Destroy the sandbox permanently.
+   * Use this when you want to clean up the sandbox completely.
+   */
+  async destroy(): Promise<void> {
+    if (this.sandbox) {
+      try {
+        console.log(`[E2B] Destroying sandbox: ${this.sandboxId}`)
+        await this.sandbox.kill()
+        this.sandbox = null
+        this.sandboxId = null
+        this.initialized = false
+      } catch (error) {
+        console.error('[E2B] Error destroying sandbox:', error)
+      }
+    }
+  }
+}
+
+// Cache of active sandboxes by thread ID
+const sandboxCache = new Map<string, E2bSandbox>()
+
+/**
+ * Get or create an E2B sandbox for a thread.
+ * Reuses existing sandbox if one exists for the thread.
+ */
+export async function getSandboxForThread(
+  threadId: string,
+  existingSandboxId?: string | null
+): Promise<E2bSandbox> {
+  // Check cache first
+  let sandbox = sandboxCache.get(threadId)
+
+  if (sandbox) {
+    return sandbox
+  }
+
+  // Create new sandbox (or reconnect to existing)
+  sandbox = new E2bSandbox({
+    sandboxId: existingSandboxId || undefined
+  })
+
+  await sandbox.initialize()
+  sandboxCache.set(threadId, sandbox)
+
+  return sandbox
+}
+
+/**
+ * Close a thread's sandbox connection.
+ */
+export async function closeSandboxForThread(threadId: string): Promise<void> {
+  const sandbox = sandboxCache.get(threadId)
+  if (sandbox) {
+    await sandbox.close()
+    sandboxCache.delete(threadId)
+  }
+}

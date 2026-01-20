@@ -509,6 +509,7 @@ class WhatsAppSocketManager {
 
     const chats: ChatInfo[] = []
     const storeChats = this.session.store.chats
+    const storeContacts = this.session.store.contacts || {}
 
     if (storeChats && storeChats.length > 0) {
       const sortedChats = [...storeChats]
@@ -516,9 +517,18 @@ class WhatsAppSocketManager {
         .slice(0, limit)
 
       for (const chat of sortedChats) {
+        // Look up name from contacts store (works for both contacts and groups)
+        let name: string | undefined
+        const contact = storeContacts[chat.id] as any
+        if (contact) {
+          name = contact.name || contact.notify
+        }
+        // Fallback to chat.name, then to JID extraction
+        name = name || chat.name || chat.id.split('@')[0]
+
         chats.push({
           jid: chat.id,
-          name: chat.name || chat.id.split('@')[0],
+          name,
           isGroup: chat.id.endsWith('@g.us'),
           lastMessageTime: chat.conversationTimestamp ? Number(chat.conversationTimestamp) * 1000 : undefined,
           unreadCount: chat.unreadCount || 0,

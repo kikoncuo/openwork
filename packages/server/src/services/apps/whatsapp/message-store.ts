@@ -2,41 +2,39 @@
  * WhatsApp Message Store - SQLite-based storage for contacts, chats, and messages
  */
 
-import { getDb, saveToDisk } from '../../db'
-import type { ContactInfo, ChatInfo, MessageInfo } from './types'
+import { getDb, saveToDisk } from '../../db/index.js'
+import type { ContactInfo, ChatInfo, MessageInfo } from './types.js'
 
 class WhatsAppMessageStore {
   // Contact operations
 
-  saveContact(contact: ContactInfo): void {
+  saveContact(contact: ContactInfo, userId: string): void {
     const db = getDb()
     const now = Date.now()
 
     db.run(
-      `INSERT OR REPLACE INTO whatsapp_contacts (jid, name, push_name, phone_number, is_group, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [contact.jid, contact.name, contact.pushName, contact.phoneNumber, contact.isGroup ? 1 : 0, now]
+      `INSERT OR REPLACE INTO whatsapp_contacts (jid, user_id, name, push_name, phone_number, is_group, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [contact.jid, userId, contact.name, contact.pushName, contact.phoneNumber, contact.isGroup ? 1 : 0, now]
     )
     saveToDisk()
   }
 
-  getContacts(query?: string): ContactInfo[] {
+  getContacts(userId: string, query?: string): ContactInfo[] {
     const db = getDb()
-    let sql = 'SELECT * FROM whatsapp_contacts ORDER BY name ASC'
-    const params: string[] = []
+    let sql = 'SELECT * FROM whatsapp_contacts WHERE user_id = ? ORDER BY name ASC'
+    const params: string[] = [userId]
 
     if (query) {
       sql = `SELECT * FROM whatsapp_contacts
-             WHERE name LIKE ? OR push_name LIKE ? OR phone_number LIKE ?
+             WHERE user_id = ? AND (name LIKE ? OR push_name LIKE ? OR phone_number LIKE ?)
              ORDER BY name ASC`
       const pattern = `%${query}%`
       params.push(pattern, pattern, pattern)
     }
 
     const stmt = db.prepare(sql)
-    if (params.length > 0) {
-      stmt.bind(params)
-    }
+    stmt.bind(params)
 
     const contacts: ContactInfo[] = []
     while (stmt.step()) {
@@ -56,28 +54,29 @@ class WhatsAppMessageStore {
 
   // Chat operations
 
-  saveChat(chat: ChatInfo): void {
+  saveChat(chat: ChatInfo, userId: string): void {
     const db = getDb()
     const now = Date.now()
 
     db.run(
-      `INSERT OR REPLACE INTO whatsapp_chats (jid, name, is_group, last_message_time, unread_count, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [chat.jid, chat.name, chat.isGroup ? 1 : 0, chat.lastMessageTime || null, chat.unreadCount, now]
+      `INSERT OR REPLACE INTO whatsapp_chats (jid, user_id, name, is_group, last_message_time, unread_count, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [chat.jid, userId, chat.name, chat.isGroup ? 1 : 0, chat.lastMessageTime || null, chat.unreadCount, now]
     )
     saveToDisk()
   }
 
-  getChats(limit = 50): ChatInfo[] {
+  getChats(userId: string, limit = 50): ChatInfo[] {
     const db = getDb()
     const stmt = db.prepare(
       `SELECT c.*, ct.name as contact_name, ct.push_name as contact_push_name
        FROM whatsapp_chats c
-       LEFT JOIN whatsapp_contacts ct ON c.jid = ct.jid
+       LEFT JOIN whatsapp_contacts ct ON c.jid = ct.jid AND c.user_id = ct.user_id
+       WHERE c.user_id = ?
        ORDER BY c.last_message_time DESC NULLS LAST
        LIMIT ?`
     )
-    stmt.bind([limit])
+    stmt.bind([userId, limit])
 
     const chats: ChatInfo[] = []
     while (stmt.step()) {
@@ -99,16 +98,17 @@ class WhatsAppMessageStore {
 
   // Message operations
 
-  saveMessage(message: MessageInfo): void {
+  saveMessage(message: MessageInfo, userId: string): void {
     const db = getDb()
     const now = Date.now()
 
     db.run(
       `INSERT OR REPLACE INTO whatsapp_messages
-       (message_id, chat_jid, from_jid, from_me, timestamp, message_type, content, raw_message, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (message_id, user_id, chat_jid, from_jid, from_me, timestamp, message_type, content, raw_message, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         message.id,
+        userId,
         message.to,
         message.from,
         message.fromMe ? 1 : 0,
@@ -122,15 +122,15 @@ class WhatsAppMessageStore {
     saveToDisk()
   }
 
-  getMessages(chatJid: string, limit = 50): MessageInfo[] {
+  getMessages(chatJid: string, userId: string, limit = 50): MessageInfo[] {
     const db = getDb()
     const stmt = db.prepare(
       `SELECT * FROM whatsapp_messages
-       WHERE chat_jid = ?
+       WHERE chat_jid = ? AND user_id = ?
        ORDER BY timestamp DESC
        LIMIT ?`
     )
-    stmt.bind([chatJid, limit])
+    stmt.bind([chatJid, userId, limit])
 
     const messages: MessageInfo[] = []
     while (stmt.step()) {
@@ -143,7 +143,7 @@ class WhatsAppMessageStore {
     return messages.reverse()
   }
 
-  searchMessages(query: string, chatJid?: string, limit = 20): MessageInfo[] {
+  searchMessages(query: string, userId: string, chatJid?: string, limit = 20): MessageInfo[] {
     const db = getDb()
     const queryLower = query.toLowerCase()
 
@@ -152,16 +152,16 @@ class WhatsAppMessageStore {
 
     if (chatJid) {
       sql = `SELECT * FROM whatsapp_messages
-             WHERE chat_jid = ? AND content LIKE ?
+             WHERE chat_jid = ? AND user_id = ? AND content LIKE ?
              ORDER BY timestamp DESC
              LIMIT ?`
-      params.push(chatJid, `%${queryLower}%`, limit)
+      params.push(chatJid, userId, `%${queryLower}%`, limit)
     } else {
       sql = `SELECT * FROM whatsapp_messages
-             WHERE content LIKE ?
+             WHERE user_id = ? AND content LIKE ?
              ORDER BY timestamp DESC
              LIMIT ?`
-      params.push(`%${queryLower}%`, limit)
+      params.push(userId, `%${queryLower}%`, limit)
     }
 
     const stmt = db.prepare(sql)
@@ -213,13 +213,13 @@ class WhatsAppMessageStore {
 
   // Cleanup
 
-  clearAllData(): void {
+  clearAllData(userId: string): void {
     const db = getDb()
-    db.run('DELETE FROM whatsapp_messages')
-    db.run('DELETE FROM whatsapp_chats')
-    db.run('DELETE FROM whatsapp_contacts')
+    db.run('DELETE FROM whatsapp_messages WHERE user_id = ?', [userId])
+    db.run('DELETE FROM whatsapp_chats WHERE user_id = ?', [userId])
+    db.run('DELETE FROM whatsapp_contacts WHERE user_id = ?', [userId])
     saveToDisk()
-    console.log('[WhatsApp Store] Cleared all data')
+    console.log(`[WhatsApp Store] Cleared all data for user ${userId}`)
   }
 
   // Helper
