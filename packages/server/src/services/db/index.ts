@@ -286,6 +286,56 @@ export async function initializeDatabase(): Promise<SqlJsDatabase> {
   db.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_chat ON whatsapp_messages(chat_jid, user_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_timestamp ON whatsapp_messages(timestamp)`)
 
+  // WhatsApp Agent Configuration table (per user)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS whatsapp_agent_config (
+      user_id TEXT PRIMARY KEY,
+      enabled INTEGER DEFAULT 0,
+      agent_id TEXT,
+      thread_timeout_minutes INTEGER DEFAULT 30,
+      workspace_path TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+      FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE SET NULL
+    )
+  `)
+
+  // WhatsApp JID to Thread Mapping table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS whatsapp_thread_mapping (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      jid TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      last_activity_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(user_id, jid),
+      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+      FOREIGN KEY (thread_id) REFERENCES threads(thread_id) ON DELETE CASCADE
+    )
+  `)
+
+  db.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_thread_mapping_user_jid ON whatsapp_thread_mapping(user_id, jid)`)
+
+  // Add source column to threads for WhatsApp thread identification
+  const hasThreadSource = threadColumns[0]?.values?.some((col) => col[1] === 'source')
+  if (!hasThreadSource) {
+    db.run(`ALTER TABLE threads ADD COLUMN source TEXT DEFAULT 'chat'`)
+  }
+
+  // Add whatsapp_jid column to threads for linking back to WhatsApp contact
+  const hasWhatsappJid = threadColumns[0]?.values?.some((col) => col[1] === 'whatsapp_jid')
+  if (!hasWhatsappJid) {
+    db.run(`ALTER TABLE threads ADD COLUMN whatsapp_jid TEXT`)
+  }
+
+  // Add whatsapp_contact_name column to threads for display
+  const hasWhatsappContactName = threadColumns[0]?.values?.some((col) => col[1] === 'whatsapp_contact_name')
+  if (!hasWhatsappContactName) {
+    db.run(`ALTER TABLE threads ADD COLUMN whatsapp_contact_name TEXT`)
+  }
+
   // --- MIGRATIONS FOR WHATSAPP TABLES ---
 
   // Check if we need to migrate whatsapp tables to include user_id
@@ -410,6 +460,9 @@ export interface Thread {
   agent_id: string | null
   user_id: string | null
   e2b_sandbox_id: string | null
+  source: string | null  // 'chat' | 'whatsapp'
+  whatsapp_jid: string | null
+  whatsapp_contact_name: string | null
 }
 
 export interface Agent {
@@ -484,6 +537,27 @@ export interface AppConnection {
   updated_at: number
 }
 
+// WhatsApp Agent Configuration (per user)
+export interface WhatsAppAgentConfig {
+  user_id: string
+  enabled: number  // 0 or 1
+  agent_id: string | null
+  thread_timeout_minutes: number
+  workspace_path: string | null
+  created_at: number
+  updated_at: number
+}
+
+// WhatsApp JID to Thread Mapping
+export interface WhatsAppThreadMapping {
+  id: number
+  user_id: string
+  jid: string
+  thread_id: string
+  last_activity_at: number
+  created_at: number
+}
+
 export function getAllThreads(): Thread[] {
   const database = getDb()
   const stmt = database.prepare('SELECT * FROM threads ORDER BY updated_at DESC')
@@ -512,14 +586,54 @@ export function getThread(threadId: string): Thread | null {
   return thread
 }
 
-export function createThread(threadId: string, metadata?: Record<string, unknown>, agentId?: string, userId?: string): Thread {
+export interface CreateThreadOptions {
+  metadata?: Record<string, unknown>
+  agentId?: string
+  userId?: string
+  source?: 'chat' | 'whatsapp'
+  whatsappJid?: string
+  whatsappContactName?: string
+}
+
+export function createThread(threadId: string, options?: CreateThreadOptions): Thread
+export function createThread(threadId: string, metadata?: Record<string, unknown>, agentId?: string, userId?: string): Thread
+export function createThread(
+  threadId: string,
+  metadataOrOptions?: Record<string, unknown> | CreateThreadOptions,
+  agentId?: string,
+  userId?: string
+): Thread {
   const database = getDb()
   const now = Date.now()
 
+  // Handle both old signature (metadata, agentId, userId) and new signature (options object)
+  let metadata: Record<string, unknown> | undefined
+  let effectiveAgentId: string | undefined
+  let effectiveUserId: string | undefined
+  let source: 'chat' | 'whatsapp' = 'chat'
+  let whatsappJid: string | undefined
+  let whatsappContactName: string | undefined
+
+  if (metadataOrOptions && 'source' in metadataOrOptions) {
+    // New options object signature
+    const opts = metadataOrOptions as CreateThreadOptions
+    metadata = opts.metadata
+    effectiveAgentId = opts.agentId
+    effectiveUserId = opts.userId
+    source = opts.source || 'chat'
+    whatsappJid = opts.whatsappJid
+    whatsappContactName = opts.whatsappContactName
+  } else {
+    // Old signature for backward compatibility
+    metadata = metadataOrOptions as Record<string, unknown> | undefined
+    effectiveAgentId = agentId
+    effectiveUserId = userId
+  }
+
   database.run(
-    `INSERT INTO threads (thread_id, created_at, updated_at, metadata, status, agent_id, user_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [threadId, now, now, metadata ? JSON.stringify(metadata) : null, 'idle', agentId || null, userId || null]
+    `INSERT INTO threads (thread_id, created_at, updated_at, metadata, status, agent_id, user_id, source, whatsapp_jid, whatsapp_contact_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [threadId, now, now, metadata ? JSON.stringify(metadata) : null, 'idle', effectiveAgentId || null, effectiveUserId || null, source, whatsappJid || null, whatsappContactName || null]
   )
 
   saveToDisk()
@@ -532,9 +646,12 @@ export function createThread(threadId: string, metadata?: Record<string, unknown
     status: 'idle',
     thread_values: null,
     title: null,
-    agent_id: agentId || null,
-    user_id: userId || null,
-    e2b_sandbox_id: null
+    agent_id: effectiveAgentId || null,
+    user_id: effectiveUserId || null,
+    e2b_sandbox_id: null,
+    source,
+    whatsapp_jid: whatsappJid || null,
+    whatsapp_contact_name: whatsappContactName || null
   }
 }
 
@@ -576,6 +693,18 @@ export function updateThread(
   if (updates.e2b_sandbox_id !== undefined) {
     setClauses.push('e2b_sandbox_id = ?')
     values.push(updates.e2b_sandbox_id)
+  }
+  if (updates.source !== undefined) {
+    setClauses.push('source = ?')
+    values.push(updates.source)
+  }
+  if (updates.whatsapp_jid !== undefined) {
+    setClauses.push('whatsapp_jid = ?')
+    values.push(updates.whatsapp_jid)
+  }
+  if (updates.whatsapp_contact_name !== undefined) {
+    setClauses.push('whatsapp_contact_name = ?')
+    values.push(updates.whatsapp_contact_name)
   }
 
   values.push(threadId)

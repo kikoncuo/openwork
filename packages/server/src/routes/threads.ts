@@ -35,7 +35,10 @@ router.get('/', async (req, res) => {
       title: row.title,
       agent_id: row.agent_id,
       user_id: row.user_id,
-      e2b_sandbox_id: row.e2b_sandbox_id
+      e2b_sandbox_id: row.e2b_sandbox_id,
+      source: row.source || 'chat',
+      whatsapp_jid: row.whatsapp_jid || null,
+      whatsapp_contact_name: row.whatsapp_contact_name || null
     }))
     res.json(result)
   } catch (error) {
@@ -68,7 +71,10 @@ router.get('/:threadId', async (req, res) => {
       title: row.title,
       agent_id: row.agent_id,
       user_id: row.user_id,
-      e2b_sandbox_id: row.e2b_sandbox_id
+      e2b_sandbox_id: row.e2b_sandbox_id,
+      source: row.source || 'chat',
+      whatsapp_jid: row.whatsapp_jid || null,
+      whatsapp_contact_name: row.whatsapp_contact_name || null
     })
   } catch (error) {
     console.error('[Threads] Get error:', error)
@@ -126,7 +132,10 @@ router.post('/', async (req, res) => {
       title,
       agent_id: thread.agent_id,
       user_id: thread.user_id,
-      e2b_sandbox_id: thread.e2b_sandbox_id
+      e2b_sandbox_id: thread.e2b_sandbox_id,
+      source: thread.source || 'chat',
+      whatsapp_jid: thread.whatsapp_jid || null,
+      whatsapp_contact_name: thread.whatsapp_contact_name || null
     })
   } catch (error) {
     console.error('[Threads] Create error:', error)
@@ -177,7 +186,10 @@ router.patch('/:threadId', async (req, res) => {
       title: row.title,
       agent_id: row.agent_id,
       user_id: row.user_id,
-      e2b_sandbox_id: row.e2b_sandbox_id
+      e2b_sandbox_id: row.e2b_sandbox_id,
+      source: row.source || 'chat',
+      whatsapp_jid: row.whatsapp_jid || null,
+      whatsapp_contact_name: row.whatsapp_contact_name || null
     })
   } catch (error) {
     console.error('[Threads] Update error:', error)

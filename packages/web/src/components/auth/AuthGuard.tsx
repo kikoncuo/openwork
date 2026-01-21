@@ -4,6 +4,7 @@
 
 import { useEffect, ReactNode } from 'react'
 import { useAuthStore } from '@/lib/auth-store'
+import { useAppStore } from '@/lib/store'
 import { ws } from '@/api/websocket'
 import { LoginPage } from './LoginPage'
 
@@ -23,6 +24,15 @@ export function AuthGuard({ children }: AuthGuardProps): React.JSX.Element {
   useEffect(() => {
     if (isAuthenticated) {
       ws.connect()
+
+      // Subscribe to thread:created events for real-time updates
+      const unsubscribe = ws.on('thread:created', (data) => {
+        useAppStore.getState().addThreadFromWebSocket(data)
+      })
+
+      return () => {
+        unsubscribe()
+      }
     } else {
       ws.disconnect()
     }

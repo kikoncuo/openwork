@@ -1,6 +1,8 @@
 // Re-export types from electron for use in renderer
 export type ThreadStatus = 'idle' | 'busy' | 'interrupted' | 'error'
 
+export type ThreadSource = 'chat' | 'whatsapp'
+
 export interface Thread {
   thread_id: string
   created_at: Date
@@ -10,6 +12,9 @@ export interface Thread {
   thread_values?: Record<string, unknown>
   title?: string
   agent_id?: string | null
+  source?: ThreadSource
+  whatsapp_jid?: string | null
+  whatsapp_contact_name?: string | null
 }
 
 // Agent types

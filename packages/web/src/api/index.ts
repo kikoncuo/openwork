@@ -335,6 +335,24 @@ export const windowApi = {
     getTools: (): Promise<
       Array<{ id: string; name: string; description: string; requireApproval?: boolean }>
     > => api.get('/whatsapp/tools'),
+    // Agent configuration
+    getAgentConfig: (): Promise<{
+      enabled: boolean
+      agent_id: string | null
+      thread_timeout_minutes: number
+      workspace_path: string | null
+    }> => api.get('/whatsapp/agent/config'),
+    updateAgentConfig: (updates: {
+      enabled?: boolean
+      agent_id?: string | null
+      thread_timeout_minutes?: number
+      workspace_path?: string | null
+    }): Promise<{
+      enabled: boolean
+      agent_id: string | null
+      thread_timeout_minutes: number
+      workspace_path: string | null
+    }> => api.patch('/whatsapp/agent/config', updates),
   },
 }
 

@@ -383,8 +383,14 @@ class WhatsAppSocketManager {
           const messageStore = getMessageStore()
           for (const msg of messages) {
             if (msg.key?.id) {
-              messageStore.saveMessage(this.formatMessage(msg), userId)
+              const formattedMessage = this.formatMessage(msg)
+              messageStore.saveMessage(formattedMessage, userId)
               this.extractChatAndContactFromMessage(session, msg)
+
+              // Trigger agent if configured and not fromMe
+              if (!formattedMessage.fromMe) {
+                this.triggerAgentIfConfigured(userId, formattedMessage)
+              }
             }
           }
           session.lastActivity = new Date()
@@ -794,6 +800,29 @@ class WhatsAppSocketManager {
         conversationTimestamp: msg.messageTimestamp,
         unreadCount: 1
       })
+    }
+  }
+
+  /**
+   * Trigger agent handler if auto-agent is configured for this user.
+   * Runs asynchronously in the background.
+   */
+  private async triggerAgentIfConfigured(userId: string, message: MessageInfo): Promise<void> {
+    // Import dynamically to avoid circular dependencies
+    try {
+      const { handleIncomingMessage, isAutoAgentEnabled } = await import('./agent-handler.js')
+
+      // Check if auto-agent is enabled before processing
+      if (!isAutoAgentEnabled(userId)) {
+        return
+      }
+
+      // Handle message asynchronously (don't await to not block message processing)
+      handleIncomingMessage(userId, message).catch(error => {
+        console.error(`[WhatsApp] Error triggering agent for user ${userId}:`, error)
+      })
+    } catch (error) {
+      console.error('[WhatsApp] Error loading agent handler:', error)
     }
   }
 

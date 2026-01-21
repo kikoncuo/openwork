@@ -1,6 +1,11 @@
 import { Router } from 'express'
 import { whatsappService } from '../services/apps/whatsapp/index.js'
 import { getWhatsAppToolInfo } from '../services/apps/whatsapp/tools.js'
+import {
+  getWhatsAppAgentConfig,
+  upsertWhatsAppAgentConfig,
+  getAllThreadMappings
+} from '../services/apps/whatsapp/config-store.js'
 import { requireAuth } from '../middleware/auth.js'
 
 const router = Router()
@@ -120,6 +125,88 @@ router.get('/tools', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('[WhatsApp] Get tools error:', error)
     res.status(500).json({ error: 'Failed to get tools' })
+  }
+})
+
+// ============================================
+// WhatsApp Agent Configuration Routes
+// ============================================
+
+// Get agent configuration
+router.get('/agent/config', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user!.userId
+    const config = getWhatsAppAgentConfig(userId)
+    if (!config) {
+      // Return default config if not set
+      res.json({
+        enabled: false,
+        agent_id: null,
+        thread_timeout_minutes: 30,
+        workspace_path: null
+      })
+    } else {
+      res.json({
+        enabled: !!config.enabled,
+        agent_id: config.agent_id,
+        thread_timeout_minutes: config.thread_timeout_minutes,
+        workspace_path: config.workspace_path
+      })
+    }
+  } catch (error) {
+    console.error('[WhatsApp] Get agent config error:', error)
+    res.status(500).json({ error: 'Failed to get agent config' })
+  }
+})
+
+// Update agent configuration
+router.patch('/agent/config', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user!.userId
+    const { enabled, agent_id, thread_timeout_minutes, workspace_path } = req.body
+
+    const updates: {
+      enabled?: number
+      agent_id?: string | null
+      thread_timeout_minutes?: number
+      workspace_path?: string | null
+    } = {}
+
+    if (enabled !== undefined) {
+      updates.enabled = enabled ? 1 : 0
+    }
+    if (agent_id !== undefined) {
+      updates.agent_id = agent_id
+    }
+    if (thread_timeout_minutes !== undefined) {
+      updates.thread_timeout_minutes = thread_timeout_minutes
+    }
+    if (workspace_path !== undefined) {
+      updates.workspace_path = workspace_path
+    }
+
+    const config = upsertWhatsAppAgentConfig(userId, updates)
+    res.json({
+      enabled: !!config.enabled,
+      agent_id: config.agent_id,
+      thread_timeout_minutes: config.thread_timeout_minutes,
+      workspace_path: config.workspace_path
+    })
+  } catch (error) {
+    console.error('[WhatsApp] Update agent config error:', error)
+    res.status(500).json({ error: 'Failed to update agent config' })
+  }
+})
+
+// Get thread mappings (for debugging/admin purposes)
+router.get('/agent/mappings', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user!.userId
+    const mappings = getAllThreadMappings(userId)
+    res.json(mappings)
+  } catch (error) {
+    console.error('[WhatsApp] Get thread mappings error:', error)
+    res.status(500).json({ error: 'Failed to get thread mappings' })
   }
 })
 

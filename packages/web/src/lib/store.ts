@@ -43,6 +43,8 @@ interface AppState {
   updateThread: (threadId: string, updates: Partial<Thread>) => Promise<void>
   generateTitleForFirstMessage: (threadId: string, content: string) => Promise<void>
   reassignThreadToAgent: (threadId: string, agentId: string) => Promise<void>
+  /** Add a thread received from WebSocket (e.g., thread:created event) */
+  addThreadFromWebSocket: (threadData: unknown) => void
 
   // Model actions
   loadModels: () => Promise<void>
@@ -224,6 +226,37 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       threads: state.threads.map((t) => (t.thread_id === threadId ? updated : t))
     }))
+  },
+
+  addThreadFromWebSocket: (threadData: unknown) => {
+    // Parse the thread data from WebSocket event
+    const data = threadData as Record<string, unknown>
+    const thread: Thread = {
+      thread_id: data.thread_id as string,
+      created_at: new Date(data.created_at as string),
+      updated_at: new Date(data.updated_at as string),
+      metadata: data.metadata as Record<string, unknown> | undefined,
+      status: (data.status as Thread['status']) || 'idle',
+      thread_values: data.thread_values as Record<string, unknown> | undefined,
+      title: data.title as string | undefined,
+      agent_id: data.agent_id as string | null | undefined,
+      source: (data.source as Thread['source']) || 'chat',
+      whatsapp_jid: data.whatsapp_jid as string | null | undefined,
+      whatsapp_contact_name: data.whatsapp_contact_name as string | null | undefined
+    }
+
+    // Add to the beginning of threads list if not already present
+    set((state) => {
+      const exists = state.threads.some((t) => t.thread_id === thread.thread_id)
+      if (exists) {
+        return state // Thread already exists, don't duplicate
+      }
+      return {
+        threads: [thread, ...state.threads]
+      }
+    })
+
+    console.log('[Store] Thread added from WebSocket:', thread.thread_id, thread.title)
   },
 
   // Model actions

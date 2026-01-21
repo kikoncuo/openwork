@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Plus, MessageSquare, Trash2, Pencil, Loader2, Settings } from 'lucide-react'
+import { Plus, MessageSquare, Trash2, Pencil, Loader2, Settings, Phone } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useAppStore } from '@/lib/store'
@@ -18,13 +18,21 @@ import {
 import { AgentIconComponent } from '@/lib/agent-icons'
 import type { Thread, Agent } from '@/types'
 
+// Thread source filter type
+type ThreadFilter = 'all' | 'chat' | 'whatsapp'
+
 // Thread loading indicator that subscribes to the stream context
-function ThreadLoadingIcon({ threadId }: { threadId: string }): React.JSX.Element {
+function ThreadLoadingIcon({ threadId, isWhatsApp }: { threadId: string; isWhatsApp?: boolean }): React.JSX.Element {
   const { isLoading } = useThreadStream(threadId)
 
   if (isLoading) {
     return <Loader2 className="size-4 shrink-0 text-status-info animate-spin" />
   }
+
+  if (isWhatsApp) {
+    return <Phone className="size-4 shrink-0 text-emerald-500" />
+  }
+
   return <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
 }
 
@@ -72,6 +80,8 @@ function ThreadListItem({
   onEditingTitleChange: (value: string) => void
   onReassignToAgent: (agentId: string) => void
 }): React.JSX.Element {
+  const isWhatsApp = thread.source === 'whatsapp'
+
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -80,7 +90,8 @@ function ThreadListItem({
             'group flex items-center gap-2 rounded-sm px-3 py-2 cursor-pointer transition-colors overflow-hidden',
             isSelected
               ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-              : 'hover:bg-sidebar-accent/50'
+              : 'hover:bg-sidebar-accent/50',
+            isWhatsApp && 'border-l-2 border-l-emerald-500'
           )}
           onClick={() => {
             if (!isEditing) {
@@ -89,7 +100,7 @@ function ThreadListItem({
           }}
         >
           <AgentIndicator agent={agent} />
-          <ThreadLoadingIcon threadId={thread.thread_id} />
+          <ThreadLoadingIcon threadId={thread.thread_id} isWhatsApp={isWhatsApp} />
           <div className="flex-1 min-w-0 overflow-hidden">
             {isEditing ? (
               <input
@@ -201,6 +212,19 @@ export function ThreadSidebar(): React.JSX.Element {
 
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
+  const [filter, setFilter] = useState<ThreadFilter>('all')
+
+  // Filter threads based on selected filter
+  const filteredThreads = useMemo(() => {
+    if (filter === 'all') return threads
+    if (filter === 'whatsapp') return threads.filter(t => t.source === 'whatsapp')
+    // 'chat' filter - show threads that are not from WhatsApp
+    return threads.filter(t => t.source !== 'whatsapp')
+  }, [threads, filter])
+
+  // Count threads by source for filter badges
+  const whatsappCount = useMemo(() => threads.filter(t => t.source === 'whatsapp').length, [threads])
+  const chatCount = useMemo(() => threads.filter(t => t.source !== 'whatsapp').length, [threads])
 
   const startEditing = (threadId: string, currentTitle: string): void => {
     setEditingThreadId(threadId)
@@ -235,10 +259,45 @@ export function ThreadSidebar(): React.JSX.Element {
           </Button>
         </div>
 
+        {/* Filter Buttons */}
+        {(whatsappCount > 0 || filter !== 'all') && (
+          <div className="px-2 pb-2 flex gap-1">
+            <Button
+              variant={filter === 'all' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setFilter('all')}
+            >
+              All
+              <span className="ml-1 text-muted-foreground">{threads.length}</span>
+            </Button>
+            <Button
+              variant={filter === 'chat' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setFilter('chat')}
+            >
+              <MessageSquare className="size-3 mr-1" />
+              Chats
+              {chatCount > 0 && <span className="ml-1 text-muted-foreground">{chatCount}</span>}
+            </Button>
+            <Button
+              variant={filter === 'whatsapp' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setFilter('whatsapp')}
+            >
+              <Phone className="size-3 mr-1 text-emerald-500" />
+              WhatsApp
+              {whatsappCount > 0 && <span className="ml-1 text-muted-foreground">{whatsappCount}</span>}
+            </Button>
+          </div>
+        )}
+
         {/* Thread List */}
         <ScrollArea className="flex-1 min-h-0">
           <div className="p-2 space-y-1 overflow-hidden">
-            {threads.map((thread) => (
+            {filteredThreads.map((thread) => (
               <ThreadListItem
                 key={thread.thread_id}
                 thread={thread}
@@ -257,9 +316,11 @@ export function ThreadSidebar(): React.JSX.Element {
               />
             ))}
 
-            {threads.length === 0 && (
+            {filteredThreads.length === 0 && (
               <div className="px-3 py-8 text-center text-sm text-muted-foreground">
-                No threads yet
+                {filter === 'all' && 'No threads yet'}
+                {filter === 'chat' && 'No chat threads'}
+                {filter === 'whatsapp' && 'No WhatsApp threads'}
               </div>
             )}
           </div>

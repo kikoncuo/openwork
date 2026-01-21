@@ -1,11 +1,15 @@
 /**
  * WhatsApp Settings Component
  * Allows users to connect/disconnect WhatsApp via QR code scanning
+ * and configure auto-agent responses for incoming messages
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { MessageSquare, Check, Loader2, Power, PowerOff, RefreshCw, AlertCircle } from 'lucide-react'
+import { MessageSquare, Check, Loader2, Power, PowerOff, RefreshCw, AlertCircle, Bot, FolderOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import {
   Dialog,
   DialogContent,
@@ -13,6 +17,14 @@ import {
   DialogTitle,
   DialogDescription
 } from '@/components/ui/dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
+import { useAppStore } from '@/lib/store'
 
 interface ConnectionStatus {
   connected: boolean
@@ -20,7 +32,15 @@ interface ConnectionStatus {
   connectedAt: number | null
 }
 
+interface AgentConfig {
+  enabled: boolean
+  agent_id: string | null
+  thread_timeout_minutes: number
+  workspace_path: string | null
+}
+
 export function WhatsAppSettings(): React.JSX.Element {
+  const agents = useAppStore((s) => s.agents)
   const [status, setStatus] = useState<ConnectionStatus>({
     connected: false,
     phoneNumber: null,
@@ -33,10 +53,51 @@ export function WhatsAppSettings(): React.JSX.Element {
   const [qrCode, setQrCode] = useState<string | null>(null)
   const [qrError, setQrError] = useState<string | null>(null)
 
+  // Agent config state
+  const [agentConfig, setAgentConfig] = useState<AgentConfig>({
+    enabled: false,
+    agent_id: null,
+    thread_timeout_minutes: 30,
+    workspace_path: null
+  })
+  const [agentConfigLoading, setAgentConfigLoading] = useState(false)
+  const [agentConfigSaving, setAgentConfigSaving] = useState(false)
+
   // Load initial status
   useEffect(() => {
     loadStatus()
   }, [])
+
+  // Load agent config when connected
+  useEffect(() => {
+    if (status.connected) {
+      loadAgentConfig()
+    }
+  }, [status.connected])
+
+  async function loadAgentConfig(): Promise<void> {
+    setAgentConfigLoading(true)
+    try {
+      const config = await window.api.whatsapp.getAgentConfig()
+      setAgentConfig(config)
+    } catch (error) {
+      console.error('Failed to load WhatsApp agent config:', error)
+    } finally {
+      setAgentConfigLoading(false)
+    }
+  }
+
+  async function saveAgentConfig(updates: Partial<AgentConfig>): Promise<void> {
+    setAgentConfigSaving(true)
+    try {
+      const config = await window.api.whatsapp.updateAgentConfig(updates)
+      setAgentConfig(config)
+    } catch (error) {
+      console.error('Failed to save WhatsApp agent config:', error)
+    } finally {
+      setAgentConfigSaving(false)
+    }
+  }
 
   // Subscribe to connection changes
   useEffect(() => {
@@ -238,6 +299,142 @@ export function WhatsAppSettings(): React.JSX.Element {
           </div>
         )}
       </div>
+
+      {/* Agent Configuration Section - Only shown when connected */}
+      {status.connected && (
+        <div className="p-4 border border-border rounded-sm bg-background mt-4">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className={`p-2 rounded-lg ${agentConfig.enabled ? 'bg-status-nominal/20' : 'bg-muted'}`}>
+                <Bot className={`size-5 ${agentConfig.enabled ? 'text-status-nominal' : 'text-muted-foreground'}`} />
+              </div>
+              <div>
+                <div className="font-medium">Auto-Agent Response</div>
+                <div className="text-xs text-muted-foreground">
+                  Automatically respond to incoming messages
+                </div>
+              </div>
+            </div>
+            <Switch
+              checked={agentConfig.enabled}
+              onCheckedChange={(enabled) => saveAgentConfig({ enabled })}
+              disabled={agentConfigSaving || agentConfigLoading}
+            />
+          </div>
+
+          {agentConfig.enabled && (
+            <div className="space-y-4 pt-4 border-t border-border/50">
+              {/* Agent Selector */}
+              <div className="space-y-2">
+                <Label htmlFor="agent-select">Agent</Label>
+                <Select
+                  value={agentConfig.agent_id || ''}
+                  onValueChange={(value) => saveAgentConfig({ agent_id: value || null })}
+                  disabled={agentConfigSaving || agents.length === 0}
+                >
+                  <SelectTrigger id="agent-select">
+                    <SelectValue placeholder="Select an agent" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {agents.map((agent) => (
+                      <SelectItem key={agent.agent_id} value={agent.agent_id}>
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="size-3 rounded-full"
+                            style={{ backgroundColor: agent.color }}
+                          />
+                          {agent.name}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {agents.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    No agents available. Create an agent first.
+                  </p>
+                )}
+              </div>
+
+              {/* Thread Timeout */}
+              <div className="space-y-2">
+                <Label htmlFor="thread-timeout">Thread Timeout (minutes)</Label>
+                <Input
+                  id="thread-timeout"
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={agentConfig.thread_timeout_minutes}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value, 10)
+                    if (value >= 1 && value <= 1440) {
+                      saveAgentConfig({ thread_timeout_minutes: value })
+                    }
+                  }}
+                  disabled={agentConfigSaving}
+                  className="w-24"
+                />
+                <p className="text-xs text-muted-foreground">
+                  New messages after timeout create a new conversation thread
+                </p>
+              </div>
+
+              {/* Workspace Path */}
+              <div className="space-y-2">
+                <Label htmlFor="workspace-path">Workspace Path</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="workspace-path"
+                    type="text"
+                    value={agentConfig.workspace_path || ''}
+                    onChange={(e) => saveAgentConfig({ workspace_path: e.target.value || null })}
+                    disabled={agentConfigSaving}
+                    placeholder="/path/to/workspace"
+                    className="flex-1"
+                  />
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={async () => {
+                      const path = await window.api.workspace.select()
+                      if (path) {
+                        saveAgentConfig({ workspace_path: path })
+                      }
+                    }}
+                    disabled={agentConfigSaving}
+                  >
+                    <FolderOpen className="size-4" />
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Agent will have access to files in this directory
+                </p>
+              </div>
+
+              {/* Status Summary */}
+              {(!agentConfig.agent_id || !agentConfig.workspace_path) && (
+                <div className="flex items-center gap-2 p-2 bg-amber-500/10 border border-amber-500/30 rounded text-amber-500 text-xs">
+                  <AlertCircle className="size-4 shrink-0" />
+                  <span>
+                    {!agentConfig.agent_id && !agentConfig.workspace_path
+                      ? 'Select an agent and workspace path to enable auto-responses'
+                      : !agentConfig.agent_id
+                        ? 'Select an agent to enable auto-responses'
+                        : 'Set a workspace path to enable auto-responses'}
+                  </span>
+                </div>
+              )}
+
+              {agentConfig.agent_id && agentConfig.workspace_path && (
+                <div className="flex items-center gap-2 p-2 bg-status-nominal/10 border border-status-nominal/30 rounded text-status-nominal text-xs">
+                  <Check className="size-4 shrink-0" />
+                  <span>Auto-response is active. Incoming messages will be answered by the agent.</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* QR Code Modal */}
       <Dialog open={qrModalOpen} onOpenChange={handleCloseQrModal}>
