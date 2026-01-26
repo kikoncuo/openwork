@@ -200,7 +200,10 @@ IMPORTANT: This tool only works if WhatsApp is connected in Settings > Apps.`,
  * Get the names of WhatsApp tools that require human approval
  */
 export function getWhatsAppInterruptTools(): string[] {
-  return ['whatsapp_send_message']
+  // Both send and get_history require approval by default
+  // - send: to prevent unwanted messages being sent
+  // - get_history: to protect privacy (reading chat history)
+  return ['whatsapp_send_message', 'whatsapp_get_history']
 }
 
 /**

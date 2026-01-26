@@ -22,6 +22,21 @@ import type { MessageInfo, ContactInfo } from './types.js'
 const processingQueues = new Map<string, Promise<void>>()
 
 /**
+ * Stub functions for backward compatibility with WebSocket handler.
+ * The new approach doesn't wait for approval - it saves the checkpoint
+ * and lets the user approve later when they view the thread.
+ */
+export function resolveThreadApproval(_threadId: string, _decision: 'approve' | 'reject'): boolean {
+  // No longer used - interrupts are handled via checkpoint restoration
+  return false
+}
+
+export function hasPendingApproval(_threadId: string): boolean {
+  // No longer used - interrupts are handled via checkpoint restoration
+  return false
+}
+
+/**
  * Format an incoming WhatsApp message for the agent.
  * Includes sender info and message content.
  */
@@ -136,7 +151,8 @@ function extractResponseFromAgentOutput(output: unknown): string | null {
     // Find the last AI message
     for (let i = outputObj.messages.length - 1; i >= 0; i--) {
       const msg = outputObj.messages[i] as Record<string, unknown>
-      if (msg.type === 'ai' || msg._getType?.() === 'ai' || msg.role === 'assistant') {
+      const getTypeResult = typeof msg._getType === 'function' ? (msg._getType as () => string)() : null
+      if (msg.type === 'ai' || getTypeResult === 'ai' || msg.role === 'assistant') {
         // Extract content
         const content = msg.content
         if (typeof content === 'string') {
@@ -167,15 +183,59 @@ function extractResponseFromAgentOutput(output: unknown): string | null {
 }
 
 /**
- * Invoke the agent server-side (without WebSocket).
- * Returns the agent's response text.
+ * Extract interrupt data from stream output.
+ * Returns the HITL request if an interrupt is detected.
+ */
+function extractInterruptFromOutput(output: unknown): {
+  actionRequests?: Array<{ name: string; id: string; args: Record<string, unknown> }>
+  reviewConfigs?: Array<{ actionName: string; allowedDecisions: string[] }>
+} | null {
+  if (!output || typeof output !== 'object') return null
+
+  const outputObj = output as Record<string, unknown>
+
+  // Check for __interrupt__ in values stream mode
+  const interrupt = outputObj.__interrupt__ as Array<{
+    value?: {
+      actionRequests?: Array<{ name: string; id: string; args: Record<string, unknown> }>
+      reviewConfigs?: Array<{ actionName: string; allowedDecisions: string[] }>
+    }
+  }> | undefined
+
+  // Log for debugging
+  if (outputObj.__interrupt__) {
+    console.log(`[WhatsApp Agent] Found __interrupt__ in output:`, JSON.stringify(outputObj.__interrupt__, null, 2))
+  }
+
+  if (interrupt && Array.isArray(interrupt) && interrupt.length > 0) {
+    const interruptValue = interrupt[0]?.value
+    console.log(`[WhatsApp Agent] Interrupt value:`, JSON.stringify(interruptValue, null, 2))
+    if (interruptValue?.actionRequests?.length) {
+      return interruptValue
+    }
+  }
+
+  return null
+}
+
+/**
+ * Invoke the agent server-side.
+ * When an interrupt occurs, the checkpoint is saved and the agent pauses.
+ * The user can approve/reject later when they view the thread.
+ * Returns the agent's response text, or null if interrupted/failed.
  */
 async function invokeAgentServerSide(
   threadId: string,
+  userId: string,
   message: string
 ): Promise<string | null> {
+  const channel = `agent:stream:${threadId}`
+
   try {
+    console.log(`[WhatsApp Agent] ========================================`)
     console.log(`[WhatsApp Agent] Invoking agent for thread ${threadId}`)
+    console.log(`[WhatsApp Agent] User ID: ${userId}`)
+    console.log(`[WhatsApp Agent] Message: ${message.substring(0, 100)}...`)
 
     const agent = await createAgentRuntime({
       threadId
@@ -183,20 +243,66 @@ async function invokeAgentServerSide(
 
     // Stream the agent and collect output
     let lastOutput: unknown = null
+    let interruptDetected = false
 
     const stream = await agent.stream(
       { messages: [{ role: 'user', content: message }] },
       {
         configurable: {
           thread_id: threadId
-        }
+        },
+        streamMode: ['messages', 'values'],
+        recursionLimit: 1000
       }
     )
 
-    for await (const output of stream) {
-      lastOutput = output
-      // Log for debugging
-      // console.log('[WhatsApp Agent] Stream output:', JSON.stringify(output, null, 2))
+    console.log(`[WhatsApp Agent] Stream started, processing chunks...`)
+
+    for await (const chunk of stream) {
+      const [mode, data] = chunk as [string, unknown]
+
+      console.log(`[WhatsApp Agent] Stream chunk - mode: ${mode}`)
+
+      // Broadcast stream event to UI (in case user is watching)
+      broadcastToUser(userId, channel, {
+        type: 'stream',
+        mode,
+        data: JSON.parse(JSON.stringify(data))
+      })
+
+      // Check for interrupt in values mode
+      if (mode === 'values') {
+        lastOutput = data
+
+        // Log the keys in the values data
+        const dataObj = data as Record<string, unknown>
+        console.log(`[WhatsApp Agent] Values keys:`, Object.keys(dataObj))
+
+        const interruptData = extractInterruptFromOutput(data)
+        if (interruptData) {
+          interruptDetected = true
+          console.log(`[WhatsApp Agent] *** INTERRUPT DETECTED ***`)
+          console.log(`[WhatsApp Agent] Tool: ${interruptData.actionRequests?.[0]?.name}`)
+          console.log(`[WhatsApp Agent] Args:`, JSON.stringify(interruptData.actionRequests?.[0]?.args))
+
+          // The checkpoint is automatically saved by LangGraph when interrupt occurs
+          // The user will see the pending approval when they view the thread
+          // Don't wait here - just let the stream complete naturally
+
+          console.log(`[WhatsApp Agent] Interrupt saved to checkpoint. User can approve later.`)
+        }
+      }
+    }
+
+    console.log(`[WhatsApp Agent] Stream completed. Interrupt detected: ${interruptDetected}`)
+
+    // Send done event
+    broadcastToUser(userId, channel, { type: 'done' })
+
+    // If interrupt was detected, return null (no response to send to WhatsApp)
+    if (interruptDetected) {
+      console.log(`[WhatsApp Agent] Agent paused for approval - no response sent to WhatsApp`)
+      return null
     }
 
     // Extract response from the last output
@@ -206,6 +312,13 @@ async function invokeAgentServerSide(
     return response
   } catch (error) {
     console.error(`[WhatsApp Agent] Error invoking agent:`, error)
+
+    // Broadcast error to UI
+    broadcastToUser(userId, channel, {
+      type: 'error',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    })
+
     return null
   }
 }
@@ -257,8 +370,8 @@ async function processMessage(userId: string, message: MessageInfo): Promise<voi
     // Format message for agent
     const formattedMessage = formatMessageForAgent(message, contact)
 
-    // Invoke agent
-    const response = await invokeAgentServerSide(threadId, formattedMessage)
+    // Invoke agent with UI streaming support
+    const response = await invokeAgentServerSide(threadId, userId, formattedMessage)
 
     // Stop typing indicator
     await sendTypingIndicator(userId, jid, false)

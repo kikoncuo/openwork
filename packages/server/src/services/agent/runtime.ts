@@ -414,21 +414,26 @@ Files and installed packages persist between calls.`
 
   // Apply user's tool approval settings from config
   const toolConfigMap = getToolConfigMap()
+  console.log('[Runtime] User tool config map:', JSON.stringify(toolConfigMap, null, 2))
+
   for (const [toolId, config] of Object.entries(toolConfigMap)) {
+    console.log(`[Runtime] Processing tool config: ${toolId} -> requireApproval=${config.requireApproval}`)
     if (config.requireApproval === true) {
       // User explicitly set this tool to require approval
       interruptOn[toolId] = true
+      console.log(`[Runtime] Added ${toolId} to interruptOn (user setting)`)
     } else if (config.requireApproval === false) {
       // User explicitly set this tool to NOT require approval
       // Only remove from interruptOn if it's not a safety-critical override
       // (We still keep execute requiring approval by default for safety)
       if (toolId !== 'execute') {
         delete interruptOn[toolId]
+        console.log(`[Runtime] Removed ${toolId} from interruptOn (user setting)`)
       }
     }
   }
 
-  console.log('[Runtime] Tool approval settings applied:', Object.keys(interruptOn))
+  console.log('[Runtime] Final interruptOn tools:', Object.keys(interruptOn))
 
   // Build agent config - always include backend (E2B or LocalSandbox)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

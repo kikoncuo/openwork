@@ -124,7 +124,23 @@ export function MessageBubble({ message, isStreaming, toolResults, pendingApprov
             {message.tool_calls!.map((toolCall, index) => {
               const result = toolResults?.get(toolCall.id)
               const pendingId = pendingApproval?.tool_call?.id
-              const needsApproval = Boolean(pendingId && pendingId === toolCall.id)
+              const pendingName = pendingApproval?.tool_call?.name
+
+              // Match by ID if available, otherwise match by name + no result
+              // This handles the case where the tool call ID is not available in checkpoint pendingWrites
+              let needsApproval = false
+              if (pendingApproval) {
+                if (pendingId && pendingId === toolCall.id) {
+                  // Exact ID match
+                  needsApproval = true
+                  console.log('[MessageBubble] Matched by ID:', toolCall.id)
+                } else if (!pendingId && pendingName === toolCall.name && !result) {
+                  // No ID available, match by name and no result yet
+                  needsApproval = true
+                  console.log('[MessageBubble] Matched by name (no ID):', pendingName, 'toolCall.id:', toolCall.id)
+                }
+              }
+
               return (
                 <ToolCallRenderer
                   key={`${toolCall.id || `tc-${index}`}-${needsApproval ? 'pending' : 'done'}`}

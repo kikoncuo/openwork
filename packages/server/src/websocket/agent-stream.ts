@@ -3,6 +3,7 @@ import { HumanMessage } from '@langchain/core/messages'
 import { Command } from '@langchain/langgraph'
 import { createAgentRuntime } from '../services/agent/runtime.js'
 import { getThread } from '../services/db/index.js'
+import { resolveThreadApproval, hasPendingApproval } from '../services/apps/whatsapp/agent-handler.js'
 import type { HITLDecision } from '../services/types.js'
 
 // Track active runs for cancellation
@@ -135,6 +136,20 @@ export function registerAgentStreamHandlers(socket: Socket): void {
       return
     }
 
+    const decisionType = command?.resume?.decision || 'approve'
+
+    // Check if this thread has a pending WhatsApp-triggered approval
+    // If so, resolve it and let the WhatsApp handler continue (don't start a new stream)
+    if (hasPendingApproval(threadId)) {
+      console.log('[Agent] Resolving WhatsApp pending approval via resume for thread:', threadId)
+      const resolved = resolveThreadApproval(threadId, decisionType as 'approve' | 'reject')
+      if (resolved) {
+        // The WhatsApp agent handler will continue streaming
+        return
+      }
+    }
+
+    // No pending WhatsApp approval - handle as direct UI-initiated resume
     // Abort any existing stream before resuming
     const existingController = activeRuns.get(threadId)
     if (existingController) {
@@ -154,7 +169,6 @@ export function registerAgentStreamHandlers(socket: Socket): void {
         recursionLimit: 1000
       }
 
-      const decisionType = command?.resume?.decision || 'approve'
       const resumeValue = { decisions: [{ type: decisionType }] }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const stream = await (agent as any).stream(new Command({ resume: resumeValue }), config)
@@ -197,6 +211,8 @@ export function registerAgentStreamHandlers(socket: Socket): void {
     const channel = `agent:stream:${threadId}`
     const userId = socket.user?.userId
 
+    console.log('[Agent] Received interrupt decision:', { threadId, decision: decision.type, userId })
+
     // Verify thread exists and user has access
     const thread = getThread(threadId)
 
@@ -218,6 +234,19 @@ export function registerAgentStreamHandlers(socket: Socket): void {
       return
     }
 
+    // Check if this thread has a pending WhatsApp-triggered approval
+    // If so, resolve it and let the WhatsApp handler continue (don't start a new stream)
+    if (hasPendingApproval(threadId)) {
+      console.log('[Agent] Resolving WhatsApp pending approval for thread:', threadId)
+      const resolved = resolveThreadApproval(threadId, decision.type as 'approve' | 'reject')
+      if (resolved) {
+        // The WhatsApp agent handler will continue streaming
+        // We just need to acknowledge the decision was received
+        return
+      }
+    }
+
+    // No pending WhatsApp approval - handle as direct UI-initiated interrupt
     // Abort any existing stream before continuing
     const existingController = activeRuns.get(threadId)
     if (existingController) {

@@ -266,6 +266,39 @@ router.get('/:threadId/history', async (req, res) => {
       history.push(checkpoint)
     }
 
+    // Log first checkpoint for debugging interrupt state
+    if (history.length > 0) {
+      const first = history[0] as Record<string, unknown>
+      console.log(`[Threads] History for ${threadId}: ${history.length} checkpoints`)
+      console.log(`[Threads] First checkpoint keys:`, Object.keys(first))
+
+      // Check various possible locations for interrupt data
+      const checkpoint = first.checkpoint as Record<string, unknown> | undefined
+      if (checkpoint) {
+        console.log(`[Threads] checkpoint keys:`, Object.keys(checkpoint))
+        const channelValues = checkpoint.channel_values as Record<string, unknown> | undefined
+        if (channelValues) {
+          console.log(`[Threads] channel_values keys:`, Object.keys(channelValues))
+          if (channelValues.__interrupt__) {
+            console.log(`[Threads] __interrupt__ in channel_values:`, JSON.stringify(channelValues.__interrupt__).substring(0, 500))
+          }
+        }
+      }
+
+      // Check pendingWrites for interrupt
+      const pendingWrites = first.pendingWrites as Array<unknown> | undefined
+      if (pendingWrites && pendingWrites.length > 0) {
+        console.log(`[Threads] pendingWrites count:`, pendingWrites.length)
+        console.log(`[Threads] pendingWrites[0]:`, JSON.stringify(pendingWrites[0]).substring(0, 500))
+      }
+
+      // Check metadata
+      const metadata = first.metadata as Record<string, unknown> | undefined
+      if (metadata) {
+        console.log(`[Threads] metadata:`, JSON.stringify(metadata).substring(0, 300))
+      }
+    }
+
     res.json(history)
   } catch (e) {
     console.warn('Failed to get thread history:', e)

@@ -563,6 +563,8 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
       // Load interrupt state from history for HITL restoration
       try {
         const history = await window.api.threads.getHistory(threadId)
+        console.log('[ThreadContext] Loaded history for thread:', threadId, 'entries:', history.length)
+
         if (history.length > 0) {
           const latestCheckpoint = history[0] as {
             checkpoint?: {
@@ -570,50 +572,125 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
                 __interrupt__?: Array<{
                   value?: {
                     actionRequests?: Array<{
-                      action: string
+                      action?: string
+                      name?: string
+                      id?: string
                       args: Record<string, unknown>
                     }>
                     reviewConfigs?: Array<{
-                      toolName: string
-                      toolArgs: Record<string, unknown>
+                      toolName?: string
+                      actionName?: string
+                      toolArgs?: Record<string, unknown>
+                      allowedDecisions?: string[]
                     }>
                   }
                 }>
               }
             }
+            // pendingWrites contains interrupt data in format: [taskId, "__interrupt__", {value: {...}}]
+            pendingWrites?: Array<[string, string, { value?: {
+              actionRequests?: Array<{
+                id: string
+                name: string
+                args: Record<string, unknown>
+                description?: string
+              }>
+              reviewConfigs?: Array<{
+                actionName: string
+                allowedDecisions: string[]
+              }>
+            }}]>
           }
 
+          // First check pendingWrites for interrupt (newer format)
+          const pendingWrites = latestCheckpoint.pendingWrites
+          console.log('[ThreadContext] pendingWrites:', pendingWrites?.length || 0, 'items')
+
+          if (pendingWrites && pendingWrites.length > 0) {
+            // Find the __interrupt__ entry in pendingWrites
+            const interruptEntry = pendingWrites.find(pw => pw[1] === '__interrupt__')
+            if (interruptEntry) {
+              const [_taskId, _type, interruptData] = interruptEntry
+              const interruptValue = interruptData?.value
+              console.log('[ThreadContext] Found interrupt in pendingWrites:', JSON.stringify(interruptValue, null, 2))
+
+              const actionRequests = interruptValue?.actionRequests
+              const reviewConfigs = interruptValue?.reviewConfigs
+
+              if (actionRequests && actionRequests.length > 0) {
+                const req = actionRequests[0]
+                const toolName = req.name || 'unknown'
+                const toolCallId = req.id
+                console.log('[ThreadContext] Creating HITL request for tool:', toolName, 'with id:', toolCallId)
+
+                // Find matching review config for allowed decisions
+                const reviewConfig = reviewConfigs?.find(rc => rc.actionName === toolName)
+
+                const hitlRequest: HITLRequest = {
+                  id: crypto.randomUUID(),
+                  tool_call: {
+                    id: toolCallId,
+                    name: toolName,
+                    args: req.args
+                  },
+                  allowed_decisions: (reviewConfig?.allowedDecisions || ['approve', 'reject', 'edit']) as Array<'approve' | 'reject' | 'edit'>
+                }
+                actions.setPendingApproval(hitlRequest)
+                console.log('[ThreadContext] Set pending approval from pendingWrites:', hitlRequest)
+                return // Found interrupt, no need to check channel_values
+              }
+            }
+          }
+
+          // Fallback: check channel_values.__interrupt__ (older format)
           const interruptData = latestCheckpoint.checkpoint?.channel_values?.__interrupt__
+          console.log('[ThreadContext] Interrupt data from channel_values:', JSON.stringify(interruptData, null, 2))
+
           if (interruptData && Array.isArray(interruptData) && interruptData.length > 0) {
             const interruptValue = interruptData[0]?.value
             const actionRequests = interruptValue?.actionRequests
             const reviewConfigs = interruptValue?.reviewConfigs
 
+            console.log('[ThreadContext] actionRequests:', JSON.stringify(actionRequests, null, 2))
+            console.log('[ThreadContext] reviewConfigs:', JSON.stringify(reviewConfigs, null, 2))
+
             if (actionRequests && actionRequests.length > 0) {
               const req = actionRequests[0]
+              // Handle both 'action' and 'name' field names (different versions use different names)
+              const toolName = req.action || req.name || 'unknown'
+              console.log('[ThreadContext] Creating HITL request for tool:', toolName, 'args:', req.args)
+
               const hitlRequest: HITLRequest = {
                 id: crypto.randomUUID(),
                 tool_call: {
-                  id: crypto.randomUUID(),
-                  name: req.action,
+                  id: req.id || crypto.randomUUID(),
+                  name: toolName,
                   args: req.args
                 },
                 allowed_decisions: ['approve', 'reject', 'edit']
               }
               actions.setPendingApproval(hitlRequest)
+              console.log('[ThreadContext] Set pending approval:', hitlRequest)
             } else if (reviewConfigs && reviewConfigs.length > 0) {
               const config = reviewConfigs[0]
+              // Handle both 'toolName' and 'actionName' field names
+              const toolName = config.toolName || config.actionName || 'unknown'
+              console.log('[ThreadContext] Creating HITL request from reviewConfig for tool:', toolName)
+
               const hitlRequest: HITLRequest = {
                 id: crypto.randomUUID(),
                 tool_call: {
                   id: crypto.randomUUID(),
-                  name: config.toolName,
-                  args: config.toolArgs
+                  name: toolName,
+                  args: config.toolArgs || {}
                 },
-                allowed_decisions: ['approve', 'reject', 'edit']
+                allowed_decisions: (config.allowedDecisions || ['approve', 'reject', 'edit']) as Array<'approve' | 'reject' | 'edit'>
               }
               actions.setPendingApproval(hitlRequest)
+              console.log('[ThreadContext] Set pending approval:', hitlRequest)
             }
+          } else {
+            console.log('[ThreadContext] No interrupt data found in checkpoint')
           }
         }
       } catch (error) {

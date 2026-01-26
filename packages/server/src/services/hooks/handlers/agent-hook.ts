@@ -200,36 +200,113 @@ function extractResponseFromAgentOutput(output: unknown): string | null {
 }
 
 /**
- * Invoke the agent server-side (without WebSocket).
- * Returns the agent's response text.
+ * Extract interrupt data from stream output.
+ * Returns true if an interrupt is detected.
+ */
+function checkForInterrupt(output: unknown): boolean {
+  if (!output || typeof output !== 'object') return false
+
+  const outputObj = output as Record<string, unknown>
+
+  // Check for __interrupt__ in values stream mode
+  const interrupt = outputObj.__interrupt__ as Array<{
+    value?: {
+      actionRequests?: Array<{ name: string; id: string; args: Record<string, unknown> }>
+    }
+  }> | undefined
+
+  if (interrupt && Array.isArray(interrupt) && interrupt.length > 0) {
+    const interruptValue = interrupt[0]?.value
+    if (interruptValue?.actionRequests?.length) {
+      const actionRequest = interruptValue.actionRequests[0]
+      console.log(`[AgentHook] *** INTERRUPT DETECTED ***`)
+      console.log(`[AgentHook] Tool: ${actionRequest?.name}`)
+      console.log(`[AgentHook] Tool Call ID: ${actionRequest?.id}`)
+      console.log(`[AgentHook] Args:`, JSON.stringify(actionRequest?.args))
+      return true
+    }
+  }
+
+  return false
+}
+
+/**
+ * Invoke the agent server-side.
+ * When an interrupt occurs, the checkpoint is saved and we return null.
+ * The user can approve/reject later when they view the thread.
+ * Returns the agent's response text, or null if interrupted/failed.
  */
 async function invokeAgentServerSide(
   threadId: string,
-  message: string,
-  workspacePath: string
+  userId: string,
+  message: string
 ): Promise<string | null> {
+  const channel = `agent:stream:${threadId}`
+
   try {
+    console.log(`[AgentHook] ========================================`)
     console.log(`[AgentHook] Invoking agent for thread ${threadId}`)
+    console.log(`[AgentHook] User ID: ${userId}`)
+    console.log(`[AgentHook] Message: ${message.substring(0, 100)}...`)
 
     const agent = await createAgentRuntime({
-      threadId,
-      workspacePath
+      threadId
     })
 
     // Stream the agent and collect output
     let lastOutput: unknown = null
+    let interruptDetected = false
 
+    // Use streamMode with 'values' to get interrupt data
     const stream = await agent.stream(
       { messages: [{ role: 'user', content: message }] },
       {
         configurable: {
           thread_id: threadId
-        }
+        },
+        streamMode: ['messages', 'values'],
+        recursionLimit: 1000
       }
     )
 
-    for await (const output of stream) {
-      lastOutput = output
+    console.log(`[AgentHook] Stream started, processing chunks...`)
+
+    for await (const chunk of stream) {
+      const [mode, data] = chunk as [string, unknown]
+
+      // Broadcast stream event to UI (in case user is watching)
+      broadcastToUser(userId, channel, {
+        type: 'stream',
+        mode,
+        data: JSON.parse(JSON.stringify(data))
+      })
+
+      // Check for interrupt in values mode
+      if (mode === 'values') {
+        lastOutput = data
+
+        // Log the keys in the values data for debugging
+        const dataObj = data as Record<string, unknown>
+        if (dataObj.__interrupt__) {
+          console.log(`[AgentHook] Found __interrupt__ in values`)
+        }
+
+        if (checkForInterrupt(data)) {
+          interruptDetected = true
+          console.log(`[AgentHook] Interrupt saved to checkpoint. User can approve later.`)
+        }
+      }
+    }
+
+    console.log(`[AgentHook] Stream completed. Interrupt detected: ${interruptDetected}`)
+
+    // Send done event
+    broadcastToUser(userId, channel, { type: 'done' })
+
+    // If interrupt was detected, return null (no response to send)
+    if (interruptDetected) {
+      console.log(`[AgentHook] Agent paused for approval - no response sent`)
+      return null
     }
 
     // Extract response from the last output
@@ -239,6 +316,13 @@ async function invokeAgentServerSide(
     return response
   } catch (error) {
     console.error(`[AgentHook] Error invoking agent:`, error)
+
+    // Broadcast error to UI
+    broadcastToUser(userId, channel, {
+      type: 'error',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    })
+
     return null
   }
 }
@@ -268,13 +352,6 @@ async function processMessage(
   // Check if auto-agent is enabled
   if (!config || !config.enabled || !config.agent_id) {
     console.log(`[AgentHook] Auto-agent not enabled for user ${userId}`)
-    return
-  }
-
-  // Get workspace path (required for agent)
-  const workspacePath = config.workspace_path
-  if (!workspacePath) {
-    console.log(`[AgentHook] No workspace path configured for user ${userId}`)
     return
   }
 
@@ -314,8 +391,8 @@ async function processMessage(
     // Format message for agent
     const formattedMessage = formatMessageForAgent(message, contact)
 
-    // Invoke agent
-    const response = await invokeAgentServerSide(threadId, formattedMessage, workspacePath)
+    // Invoke agent with userId for broadcasting
+    const response = await invokeAgentServerSide(threadId, userId, formattedMessage)
 
     // Emit response or error event
     if (response) {
@@ -415,5 +492,5 @@ export const agentHookHandler: HookHandler = {
  */
 export function isAutoAgentEnabled(userId: string, source: string = 'whatsapp'): boolean {
   const config = getSourceAgentConfig(userId, source)
-  return !!(config?.enabled && config.agent_id && config.workspace_path)
+  return !!(config?.enabled && config.agent_id)
 }
