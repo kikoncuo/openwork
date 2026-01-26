@@ -12,7 +12,7 @@ import {
   updateThreadMappingActivity,
   isThreadMappingActive
 } from '../../apps/whatsapp/config-store.js'
-import { createThread, updateThread } from '../../db/index.js'
+import { createThread, updateThread, setThreadNeedsAttention } from '../../db/index.js'
 import { createAgentRuntime } from '../../agent/runtime.js'
 import { broadcastToUser } from '../../../websocket/index.js'
 import { getMessageStore } from '../../apps/whatsapp/message-store.js'
@@ -303,15 +303,31 @@ async function invokeAgentServerSide(
     // Send done event
     broadcastToUser(userId, channel, { type: 'done' })
 
-    // If interrupt was detected, return null (no response to send)
+    // If interrupt was detected, set needs_attention and return null
     if (interruptDetected) {
-      console.log(`[AgentHook] Agent paused for approval - no response sent`)
+      console.log(`[AgentHook] Agent paused for approval - setting needs_attention`)
+      setThreadNeedsAttention(threadId, true)
+      // Broadcast thread:updated event
+      broadcastToUser(userId, 'thread:updated', {
+        thread_id: threadId,
+        needs_attention: true
+      })
       return null
     }
 
     // Extract response from the last output
     const response = extractResponseFromAgentOutput(lastOutput)
     console.log(`[AgentHook] Agent response extracted: ${response ? response.substring(0, 100) + '...' : 'null'}`)
+
+    // If we have a response, set needs_attention
+    if (response) {
+      setThreadNeedsAttention(threadId, true)
+      // Broadcast thread:updated event
+      broadcastToUser(userId, 'thread:updated', {
+        thread_id: threadId,
+        needs_attention: true
+      })
+    }
 
     return response
   } catch (error) {

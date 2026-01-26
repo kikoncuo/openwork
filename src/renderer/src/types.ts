@@ -127,7 +127,8 @@ export interface ToolResult {
 
 export interface HITLRequest {
   id: string
-  tool_call: ToolCall
+  tool_call?: ToolCall           // Legacy single (backwards compat)
+  tool_calls?: ToolCall[]        // NEW: array of all pending tool calls
   allowed_decisions: HITLDecision['type'][]
 }
 

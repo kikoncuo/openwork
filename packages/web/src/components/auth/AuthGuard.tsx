@@ -25,13 +25,18 @@ export function AuthGuard({ children }: AuthGuardProps): React.JSX.Element {
     if (isAuthenticated) {
       ws.connect()
 
-      // Subscribe to thread:created events for real-time updates
-      const unsubscribe = ws.on('thread:created', (data) => {
+      // Subscribe to thread events for real-time updates
+      const unsubscribeCreated = ws.on('thread:created', (data) => {
         useAppStore.getState().addThreadFromWebSocket(data)
       })
 
+      const unsubscribeUpdated = ws.on('thread:updated', (data) => {
+        useAppStore.getState().updateThreadFromWebSocket(data)
+      })
+
       return () => {
-        unsubscribe()
+        unsubscribeCreated()
+        unsubscribeUpdated()
       }
     } else {
       ws.disconnect()

@@ -618,21 +618,21 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
               const reviewConfigs = interruptValue?.reviewConfigs
 
               if (actionRequests && actionRequests.length > 0) {
-                const req = actionRequests[0]
-                const toolName = req.name || 'unknown'
-                const toolCallId = req.id
-                console.log('[ThreadContext] Creating HITL request for tool:', toolName, 'with id:', toolCallId)
+                // Extract ALL tool calls from actionRequests
+                const toolCalls = actionRequests.map(req => ({
+                  id: req.id || crypto.randomUUID(),
+                  name: req.name || 'unknown',
+                  args: req.args
+                }))
+                console.log('[ThreadContext] Creating HITL request for', toolCalls.length, 'tool calls:', toolCalls.map(tc => tc.name))
 
                 // Find matching review config for allowed decisions
-                const reviewConfig = reviewConfigs?.find(rc => rc.actionName === toolName)
+                const reviewConfig = reviewConfigs?.[0]
 
                 const hitlRequest: HITLRequest = {
                   id: crypto.randomUUID(),
-                  tool_call: {
-                    id: toolCallId,
-                    name: toolName,
-                    args: req.args
-                  },
+                  tool_calls: toolCalls,        // All tool calls
+                  tool_call: toolCalls[0],      // Backwards compat - first tool call
                   allowed_decisions: (reviewConfig?.allowedDecisions || ['approve', 'reject', 'edit']) as Array<'approve' | 'reject' | 'edit'>
                 }
                 actions.setPendingApproval(hitlRequest)
@@ -655,36 +655,38 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
             console.log('[ThreadContext] reviewConfigs:', JSON.stringify(reviewConfigs, null, 2))
 
             if (actionRequests && actionRequests.length > 0) {
-              const req = actionRequests[0]
-              // Handle both 'action' and 'name' field names (different versions use different names)
-              const toolName = req.action || req.name || 'unknown'
-              console.log('[ThreadContext] Creating HITL request for tool:', toolName, 'args:', req.args)
+              // Extract ALL tool calls from actionRequests
+              const toolCalls = actionRequests.map(req => ({
+                id: req.id || crypto.randomUUID(),
+                // Handle both 'action' and 'name' field names (different versions use different names)
+                name: req.action || req.name || 'unknown',
+                args: req.args
+              }))
+              console.log('[ThreadContext] Creating HITL request for', toolCalls.length, 'tool calls:', toolCalls.map(tc => tc.name))
 
               const hitlRequest: HITLRequest = {
                 id: crypto.randomUUID(),
-                tool_call: {
-                  id: req.id || crypto.randomUUID(),
-                  name: toolName,
-                  args: req.args
-                },
+                tool_calls: toolCalls,        // All tool calls
+                tool_call: toolCalls[0],      // Backwards compat - first tool call
                 allowed_decisions: ['approve', 'reject', 'edit']
               }
               actions.setPendingApproval(hitlRequest)
               console.log('[ThreadContext] Set pending approval:', hitlRequest)
             } else if (reviewConfigs && reviewConfigs.length > 0) {
-              const config = reviewConfigs[0]
-              // Handle both 'toolName' and 'actionName' field names
-              const toolName = config.toolName || config.actionName || 'unknown'
-              console.log('[ThreadContext] Creating HITL request from reviewConfig for tool:', toolName)
+              // Extract ALL tool calls from reviewConfigs
+              const toolCalls = reviewConfigs.map(config => ({
+                id: crypto.randomUUID(),
+                // Handle both 'toolName' and 'actionName' field names
+                name: config.toolName || config.actionName || 'unknown',
+                args: config.toolArgs || {}
+              }))
+              console.log('[ThreadContext] Creating HITL request from reviewConfigs for', toolCalls.length, 'tools')
 
               const hitlRequest: HITLRequest = {
                 id: crypto.randomUUID(),
-                tool_call: {
-                  id: crypto.randomUUID(),
-                  name: toolName,
-                  args: config.toolArgs || {}
-                },
-                allowed_decisions: (config.allowedDecisions || ['approve', 'reject', 'edit']) as Array<'approve' | 'reject' | 'edit'>
+                tool_calls: toolCalls,        // All tool calls
+                tool_call: toolCalls[0],      // Backwards compat - first tool call
+                allowed_decisions: (reviewConfigs[0]?.allowedDecisions || ['approve', 'reject', 'edit']) as Array<'approve' | 'reject' | 'edit'>
               }
               actions.setPendingApproval(hitlRequest)
               console.log('[ThreadContext] Set pending approval:', hitlRequest)

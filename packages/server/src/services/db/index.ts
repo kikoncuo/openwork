@@ -365,6 +365,12 @@ export async function initializeDatabase(): Promise<SqlJsDatabase> {
     db.run(`ALTER TABLE threads ADD COLUMN whatsapp_contact_name TEXT`)
   }
 
+  // Add needs_attention column to threads for sidebar indicator
+  const hasNeedsAttention = threadColumns[0]?.values?.some((col) => col[1] === 'needs_attention')
+  if (!hasNeedsAttention) {
+    db.run(`ALTER TABLE threads ADD COLUMN needs_attention INTEGER DEFAULT 0`)
+  }
+
   // --- MIGRATIONS FOR WHATSAPP TABLES ---
 
   // Check if we need to migrate whatsapp tables to include user_id
@@ -512,6 +518,7 @@ export interface Thread {
   source: string | null  // 'chat' | 'whatsapp'
   whatsapp_jid: string | null
   whatsapp_contact_name: string | null
+  needs_attention: number  // 0 or 1 (SQLite boolean)
 }
 
 export interface Agent {
@@ -692,9 +699,9 @@ export function createThread(
   }
 
   database.run(
-    `INSERT INTO threads (thread_id, created_at, updated_at, metadata, status, agent_id, user_id, source, whatsapp_jid, whatsapp_contact_name)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [threadId, now, now, metadata ? JSON.stringify(metadata) : null, 'idle', effectiveAgentId || null, effectiveUserId || null, source, whatsappJid || null, whatsappContactName || null]
+    `INSERT INTO threads (thread_id, created_at, updated_at, metadata, status, agent_id, user_id, source, whatsapp_jid, whatsapp_contact_name, needs_attention)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [threadId, now, now, metadata ? JSON.stringify(metadata) : null, 'idle', effectiveAgentId || null, effectiveUserId || null, source, whatsappJid || null, whatsappContactName || null, 0]
   )
 
   saveToDisk()
@@ -712,7 +719,8 @@ export function createThread(
     e2b_sandbox_id: null,
     source,
     whatsapp_jid: whatsappJid || null,
-    whatsapp_contact_name: whatsappContactName || null
+    whatsapp_contact_name: whatsappContactName || null,
+    needs_attention: 0
   }
 }
 
@@ -766,6 +774,10 @@ export function updateThread(
   if (updates.whatsapp_contact_name !== undefined) {
     setClauses.push('whatsapp_contact_name = ?')
     values.push(updates.whatsapp_contact_name)
+  }
+  if (updates.needs_attention !== undefined) {
+    setClauses.push('needs_attention = ?')
+    values.push(updates.needs_attention)
   }
 
   values.push(threadId)
@@ -1131,4 +1143,16 @@ export function listAgentBackupFiles(agentId: string): Array<{path: string, size
   })
 
   return files
+}
+
+// ============================================
+// Thread Attention Functions
+// ============================================
+
+/**
+ * Set the needs_attention flag for a thread.
+ * Returns the updated thread or null if not found.
+ */
+export function setThreadNeedsAttention(threadId: string, needsAttention: boolean): Thread | null {
+  return updateThread(threadId, { needs_attention: needsAttention ? 1 : 0 })
 }

@@ -580,28 +580,34 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
             const reviewConfigs = interruptValue?.reviewConfigs
 
             if (actionRequests && actionRequests.length > 0) {
-              // New langchain HITL format
-              const req = actionRequests[0]
+              // Extract ALL tool calls from actionRequests
+              const toolCalls = actionRequests.map(req => ({
+                id: req.id || crypto.randomUUID(),
+                name: req.action || req.name || 'unknown',
+                args: req.args
+              }))
+              console.log('[ThreadContext] Creating HITL request for', toolCalls.length, 'tool calls:', toolCalls.map(tc => tc.name))
+
               const hitlRequest: HITLRequest = {
                 id: crypto.randomUUID(),
-                tool_call: {
-                  id: crypto.randomUUID(),
-                  name: req.action,
-                  args: req.args
-                },
+                tool_calls: toolCalls,        // All tool calls
+                tool_call: toolCalls[0],      // Backwards compat - first tool call
                 allowed_decisions: ['approve', 'reject', 'edit']
               }
               actions.setPendingApproval(hitlRequest)
             } else if (reviewConfigs && reviewConfigs.length > 0) {
-              // Alternative format
-              const config = reviewConfigs[0]
+              // Extract ALL tool calls from reviewConfigs
+              const toolCalls = reviewConfigs.map(config => ({
+                id: crypto.randomUUID(),
+                name: config.toolName || 'unknown',
+                args: config.toolArgs || {}
+              }))
+              console.log('[ThreadContext] Creating HITL request from reviewConfigs for', toolCalls.length, 'tools')
+
               const hitlRequest: HITLRequest = {
                 id: crypto.randomUUID(),
-                tool_call: {
-                  id: crypto.randomUUID(),
-                  name: config.toolName,
-                  args: config.toolArgs
-                },
+                tool_calls: toolCalls,        // All tool calls
+                tool_call: toolCalls[0],      // Backwards compat - first tool call
                 allowed_decisions: ['approve', 'reject', 'edit']
               }
               actions.setPendingApproval(hitlRequest)

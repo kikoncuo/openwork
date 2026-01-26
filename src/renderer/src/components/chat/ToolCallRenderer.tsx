@@ -25,7 +25,10 @@ interface ToolCallRendererProps {
   result?: string | unknown
   isError?: boolean
   needsApproval?: boolean
+  isBatchMode?: boolean
+  currentDecision?: 'approve' | 'reject'
   onApprovalDecision?: (decision: 'approve' | 'reject' | 'edit') => void
+  onDecisionChange?: (decision: 'approve' | 'reject') => void
 }
 
 const TOOL_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -263,7 +266,7 @@ function TaskDisplay({ args, isExpanded }: { args: Record<string, unknown>; isEx
   )
 }
 
-export function ToolCallRenderer({ toolCall, result, isError, needsApproval, onApprovalDecision }: ToolCallRendererProps) {
+export function ToolCallRenderer({ toolCall, result, isError, needsApproval, isBatchMode, currentDecision, onApprovalDecision, onDecisionChange }: ToolCallRendererProps) {
   // Defensive: ensure args is always an object
   const args = toolCall?.args || {}
 
@@ -574,7 +577,7 @@ export function ToolCallRenderer({ toolCall, result, isError, needsApproval, onA
         <div className="border-t border-amber-500/20 px-3 py-3 space-y-3">
           {/* Show formatted content (e.g., command preview) */}
           {formattedContent}
-          
+
           {/* Arguments */}
           <div>
             <div className="text-section-header text-[10px] mb-1">ARGUMENTS</div>
@@ -582,22 +585,71 @@ export function ToolCallRenderer({ toolCall, result, isError, needsApproval, onA
               {JSON.stringify(args, null, 2)}
             </pre>
           </div>
-          
-          {/* Action buttons */}
-          <div className="flex items-center justify-end gap-2">
-            <button 
-              className="px-3 py-1.5 text-xs border border-border rounded-sm hover:bg-background-interactive transition-colors"
-              onClick={handleReject}
-            >
-              Reject
-            </button>
-            <button 
-              className="px-3 py-1.5 text-xs bg-status-nominal text-background rounded-sm hover:bg-status-nominal/90 transition-colors"
-              onClick={handleApprove}
-            >
-              Approve & Run
-            </button>
-          </div>
+
+          {/* Action buttons - different UI for batch mode vs single mode */}
+          {isBatchMode ? (
+            // Batch mode: toggle buttons that set decision state
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-muted-foreground">
+                {currentDecision ? (
+                  <span className={cn(
+                    "font-medium",
+                    currentDecision === 'approve' ? "text-status-nominal" : "text-status-critical"
+                  )}>
+                    {currentDecision === 'approve' ? 'Will approve' : 'Will reject'}
+                  </span>
+                ) : (
+                  'Select decision'
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  className={cn(
+                    "px-3 py-1.5 text-xs border rounded-sm transition-colors",
+                    currentDecision === 'reject'
+                      ? "border-status-critical bg-status-critical/10 text-status-critical"
+                      : "border-border hover:bg-background-interactive"
+                  )}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onDecisionChange?.('reject')
+                  }}
+                >
+                  Reject
+                </button>
+                <button
+                  className={cn(
+                    "px-3 py-1.5 text-xs border rounded-sm transition-colors",
+                    currentDecision === 'approve'
+                      ? "border-status-nominal bg-status-nominal/10 text-status-nominal"
+                      : "border-border hover:bg-background-interactive"
+                  )}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onDecisionChange?.('approve')
+                  }}
+                >
+                  Approve
+                </button>
+              </div>
+            </div>
+          ) : (
+            // Single mode: immediate action buttons
+            <div className="flex items-center justify-end gap-2">
+              <button
+                className="px-3 py-1.5 text-xs border border-border rounded-sm hover:bg-background-interactive transition-colors"
+                onClick={handleReject}
+              >
+                Reject
+              </button>
+              <button
+                className="px-3 py-1.5 text-xs bg-status-nominal text-background rounded-sm hover:bg-status-nominal/90 transition-colors"
+                onClick={handleApprove}
+              >
+                Approve & Run
+              </button>
+            </div>
+          )}
         </div>
       ) : null}
 

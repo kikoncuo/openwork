@@ -38,7 +38,8 @@ router.get('/', async (req, res) => {
       e2b_sandbox_id: row.e2b_sandbox_id,
       source: row.source || 'chat',
       whatsapp_jid: row.whatsapp_jid || null,
-      whatsapp_contact_name: row.whatsapp_contact_name || null
+      whatsapp_contact_name: row.whatsapp_contact_name || null,
+      needs_attention: Boolean(row.needs_attention)
     }))
     res.json(result)
   } catch (error) {
@@ -74,7 +75,8 @@ router.get('/:threadId', async (req, res) => {
       e2b_sandbox_id: row.e2b_sandbox_id,
       source: row.source || 'chat',
       whatsapp_jid: row.whatsapp_jid || null,
-      whatsapp_contact_name: row.whatsapp_contact_name || null
+      whatsapp_contact_name: row.whatsapp_contact_name || null,
+      needs_attention: Boolean(row.needs_attention)
     })
   } catch (error) {
     console.error('[Threads] Get error:', error)
@@ -133,7 +135,8 @@ router.post('/', async (req, res) => {
       e2b_sandbox_id: thread.e2b_sandbox_id,
       source: thread.source || 'chat',
       whatsapp_jid: thread.whatsapp_jid || null,
-      whatsapp_contact_name: thread.whatsapp_contact_name || null
+      whatsapp_contact_name: thread.whatsapp_contact_name || null,
+      needs_attention: Boolean(thread.needs_attention)
     })
   } catch (error) {
     console.error('[Threads] Create error:', error)
@@ -167,6 +170,7 @@ router.patch('/:threadId', async (req, res) => {
     if (updates.thread_values !== undefined) updateData.thread_values = JSON.stringify(updates.thread_values)
     if (updates.agent_id !== undefined) updateData.agent_id = updates.agent_id
     if (updates.e2b_sandbox_id !== undefined) updateData.e2b_sandbox_id = updates.e2b_sandbox_id
+    if (updates.needs_attention !== undefined) updateData.needs_attention = updates.needs_attention ? 1 : 0
 
     const row = dbUpdateThread(threadId, updateData)
     if (!row) {
@@ -187,7 +191,8 @@ router.patch('/:threadId', async (req, res) => {
       e2b_sandbox_id: row.e2b_sandbox_id,
       source: row.source || 'chat',
       whatsapp_jid: row.whatsapp_jid || null,
-      whatsapp_contact_name: row.whatsapp_contact_name || null
+      whatsapp_contact_name: row.whatsapp_contact_name || null,
+      needs_attention: Boolean(row.needs_attention)
     })
   } catch (error) {
     console.error('[Threads] Update error:', error)

@@ -81,6 +81,12 @@ function ThreadListItem({
   onReassignToAgent: (agentId: string) => void
 }): React.JSX.Element {
   const isWhatsApp = thread.source === 'whatsapp'
+  const { isLoading } = useThreadStream(thread.thread_id)
+
+  // Show attention indicator when:
+  // - Thread is NOT selected AND
+  // - Thread needs_attention is true OR thread is currently loading (tool running)
+  const showAttentionIndicator = !isSelected && (thread.needs_attention || isLoading)
 
   return (
     <ContextMenu>
@@ -91,7 +97,7 @@ function ThreadListItem({
             isSelected
               ? 'bg-sidebar-accent text-sidebar-accent-foreground'
               : 'hover:bg-sidebar-accent/50',
-            isWhatsApp && 'border-l-2 border-l-emerald-500'
+            showAttentionIndicator && 'border-l-2 border-l-emerald-500'
           )}
           onClick={() => {
             if (!isEditing) {

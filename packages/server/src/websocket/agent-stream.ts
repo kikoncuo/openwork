@@ -2,12 +2,36 @@ import { Socket } from 'socket.io'
 import { HumanMessage } from '@langchain/core/messages'
 import { Command } from '@langchain/langgraph'
 import { createAgentRuntime } from '../services/agent/runtime.js'
-import { getThread } from '../services/db/index.js'
+import { getThread, setThreadNeedsAttention } from '../services/db/index.js'
+import { broadcastToUser } from './index.js'
 import { resolveThreadApproval, hasPendingApproval } from '../services/apps/whatsapp/agent-handler.js'
 import type { HITLDecision } from '../services/types.js'
 
 // Track active runs for cancellation
 const activeRuns = new Map<string, AbortController>()
+
+/**
+ * Check if stream output contains an interrupt (tool needs approval).
+ */
+function checkForInterrupt(output: unknown): boolean {
+  if (!output || typeof output !== 'object') return false
+
+  const outputObj = output as Record<string, unknown>
+  const interrupt = outputObj.__interrupt__ as Array<{
+    value?: {
+      actionRequests?: Array<{ name: string; id: string; args: Record<string, unknown> }>
+    }
+  }> | undefined
+
+  if (interrupt && Array.isArray(interrupt) && interrupt.length > 0) {
+    const interruptValue = interrupt[0]?.value
+    if (interruptValue?.actionRequests?.length) {
+      return true
+    }
+  }
+
+  return false
+}
 
 export function registerAgentStreamHandlers(socket: Socket): void {
   // Handle agent invocation with streaming
@@ -72,10 +96,17 @@ export function registerAgentStreamHandlers(socket: Socket): void {
         }
       )
 
+      let interruptDetected = false
+
       for await (const chunk of stream) {
         if (abortController.signal.aborted) break
 
         const [mode, data] = chunk as [string, unknown]
+
+        // Check for interrupt in values mode
+        if (mode === 'values' && checkForInterrupt(data)) {
+          interruptDetected = true
+        }
 
         // Forward raw stream events
         socket.emit(channel, {
@@ -88,6 +119,15 @@ export function registerAgentStreamHandlers(socket: Socket): void {
       // Send done event (only if not aborted)
       if (!abortController.signal.aborted) {
         socket.emit(channel, { type: 'done' })
+
+        // If interrupt was detected, set needs_attention on the thread
+        if (interruptDetected && userId) {
+          setThreadNeedsAttention(threadId, true)
+          broadcastToUser(userId, 'thread:updated', {
+            thread_id: threadId,
+            needs_attention: true
+          })
+        }
       }
     } catch (error) {
       const isAbortError =
@@ -109,7 +149,7 @@ export function registerAgentStreamHandlers(socket: Socket): void {
   })
 
   // Handle agent resume (after interrupt approval/rejection)
-  socket.on('agent:resume', async ({ threadId, command, modelId }: { threadId: string; command: { resume?: { decision?: string } }; modelId?: string }) => {
+  socket.on('agent:resume', async ({ threadId, command, modelId }: { threadId: string; command: { resume?: { decision?: string; decisions?: Array<{ type: string }> } }; modelId?: string }) => {
     const channel = `agent:stream:${threadId}`
     const userId = socket.user?.userId
 
@@ -136,7 +176,19 @@ export function registerAgentStreamHandlers(socket: Socket): void {
       return
     }
 
-    const decisionType = command?.resume?.decision || 'approve'
+    // Support both new format (decisions array) and legacy format (single decision)
+    let resumeValue: { decisions: Array<{ type: string }> }
+
+    if (command?.resume?.decisions && Array.isArray(command.resume.decisions)) {
+      // New format: multiple decisions
+      resumeValue = { decisions: command.resume.decisions }
+    } else {
+      // Legacy format: single decision
+      const decisionType = command?.resume?.decision || 'approve'
+      resumeValue = { decisions: [{ type: decisionType }] }
+    }
+
+    const decisionType = resumeValue.decisions[0]?.type || 'approve'
 
     // Check if this thread has a pending WhatsApp-triggered approval
     // If so, resolve it and let the WhatsApp handler continue (don't start a new stream)
@@ -168,15 +220,21 @@ export function registerAgentStreamHandlers(socket: Socket): void {
         streamMode: ['messages', 'values'] as const,
         recursionLimit: 1000
       }
-
-      const resumeValue = { decisions: [{ type: decisionType }] }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const stream = await (agent as any).stream(new Command({ resume: resumeValue }), config)
+
+      let interruptDetected = false
 
       for await (const chunk of stream) {
         if (abortController.signal.aborted) break
 
         const [mode, data] = chunk as unknown as [string, unknown]
+
+        // Check for new interrupt in values mode
+        if (mode === 'values' && checkForInterrupt(data)) {
+          interruptDetected = true
+        }
+
         socket.emit(channel, {
           type: 'stream',
           mode,
@@ -186,6 +244,15 @@ export function registerAgentStreamHandlers(socket: Socket): void {
 
       if (!abortController.signal.aborted) {
         socket.emit(channel, { type: 'done' })
+
+        // If a new interrupt was detected, set needs_attention
+        if (interruptDetected && userId) {
+          setThreadNeedsAttention(threadId, true)
+          broadcastToUser(userId, 'thread:updated', {
+            thread_id: threadId,
+            needs_attention: true
+          })
+        }
       }
     } catch (error) {
       const isAbortError =
@@ -270,10 +337,18 @@ export function registerAgentStreamHandlers(socket: Socket): void {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const stream = await (agent as any).stream(null, config)
 
+        let interruptDetected = false
+
         for await (const chunk of stream) {
           if (abortController.signal.aborted) break
 
           const [mode, data] = chunk as unknown as [string, unknown]
+
+          // Check for new interrupt in values mode
+          if (mode === 'values' && checkForInterrupt(data)) {
+            interruptDetected = true
+          }
+
           socket.emit(channel, {
             type: 'stream',
             mode,
@@ -283,6 +358,15 @@ export function registerAgentStreamHandlers(socket: Socket): void {
 
         if (!abortController.signal.aborted) {
           socket.emit(channel, { type: 'done' })
+
+          // If a new interrupt was detected, set needs_attention
+          if (interruptDetected && userId) {
+            setThreadNeedsAttention(threadId, true)
+            broadcastToUser(userId, 'thread:updated', {
+              thread_id: threadId,
+              needs_attention: true
+            })
+          }
         }
       } else if (decision.type === 'reject') {
         socket.emit(channel, { type: 'done' })

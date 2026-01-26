@@ -45,6 +45,8 @@ interface AppState {
   reassignThreadToAgent: (threadId: string, agentId: string) => Promise<void>
   /** Add a thread received from WebSocket (e.g., thread:created event) */
   addThreadFromWebSocket: (threadData: unknown) => void
+  /** Update a thread from WebSocket (e.g., thread:updated event) */
+  updateThreadFromWebSocket: (threadData: unknown) => void
 
   // Model actions
   loadModels: () => Promise<void>
@@ -178,8 +180,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectThread: async (threadId: string) => {
-    // Just update currentThreadId - ThreadContext handles per-thread state
+    // Update currentThreadId - ThreadContext handles per-thread state
     set({ currentThreadId: threadId })
+
+    // Mark thread as read (clear needs_attention) via API
+    try {
+      const thread = get().threads.find(t => t.thread_id === threadId)
+      if (thread?.needs_attention) {
+        await window.api.threads.update(threadId, { needs_attention: false })
+        // Update local state
+        set((state) => ({
+          threads: state.threads.map(t =>
+            t.thread_id === threadId ? { ...t, needs_attention: false } : t
+          )
+        }))
+      }
+    } catch (error) {
+      console.error('[Store] Failed to mark thread as read:', error)
+    }
   },
 
   deleteThread: async (threadId: string) => {
@@ -257,6 +275,42 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
 
     console.log('[Store] Thread added from WebSocket:', thread.thread_id, thread.title)
+  },
+
+  updateThreadFromWebSocket: (threadData: unknown) => {
+    const data = threadData as Record<string, unknown>
+    const threadId = data.thread_id as string
+
+    if (!threadId) {
+      console.warn('[Store] updateThreadFromWebSocket received data without thread_id')
+      return
+    }
+
+    // Update the thread in place with the new data
+    set((state) => {
+      const existingIndex = state.threads.findIndex(t => t.thread_id === threadId)
+      if (existingIndex === -1) {
+        // Thread not found, ignore (might not be loaded yet)
+        return state
+      }
+
+      // Don't set needs_attention if this is the currently selected thread
+      const isCurrentThread = state.currentThreadId === threadId
+      const needsAttention = isCurrentThread ? false : (data.needs_attention as boolean | undefined)
+
+      const updatedThreads = [...state.threads]
+      updatedThreads[existingIndex] = {
+        ...updatedThreads[existingIndex],
+        ...(data.title !== undefined && { title: data.title as string }),
+        ...(data.status !== undefined && { status: data.status as Thread['status'] }),
+        ...(needsAttention !== undefined && { needs_attention: needsAttention }),
+        updated_at: data.updated_at ? new Date(data.updated_at as string) : updatedThreads[existingIndex].updated_at
+      }
+
+      return { threads: updatedThreads }
+    })
+
+    console.log('[Store] Thread updated from WebSocket:', threadId, data.needs_attention)
   },
 
   // Model actions

@@ -15,6 +15,7 @@ export interface Thread {
   source?: ThreadSource
   whatsapp_jid?: string | null
   whatsapp_contact_name?: string | null
+  needs_attention?: boolean
 }
 
 // Agent types
@@ -131,7 +132,8 @@ export interface ToolResult {
 
 export interface HITLRequest {
   id: string
-  tool_call: ToolCall
+  tool_call?: ToolCall           // Legacy single (backwards compat)
+  tool_calls?: ToolCall[]        // NEW: array of all pending tool calls
   allowed_decisions: HITLDecision['type'][]
 }
 

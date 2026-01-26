@@ -322,23 +322,25 @@ export class ElectronIPCTransport implements UseStreamTransport {
             const actionRequests = interruptValue?.actionRequests
             const reviewConfigs = interruptValue?.reviewConfigs
 
+            // Extract ALL action requests (tool calls) that need approval
             if (actionRequests?.length) {
-              const firstAction = actionRequests[0]
-              const reviewConfig = reviewConfigs?.find(
-                (rc: { actionName: string }) => rc.actionName === firstAction.name
-              )
+              const toolCalls = actionRequests.map((action: { id?: string; name: string; args?: Record<string, unknown> }) => ({
+                id: action.id || crypto.randomUUID(),
+                name: action.name,
+                args: action.args || {}
+              }))
+
+              // Get allowed decisions from the first review config
+              const reviewConfig = reviewConfigs?.[0]
 
               events.push({
                 event: 'custom',
                 data: {
                   type: 'interrupt',
                   request: {
-                    id: firstAction.id || crypto.randomUUID(),
-                    tool_call: {
-                      id: firstAction.id,
-                      name: firstAction.name,
-                      args: firstAction.args || {}
-                    },
+                    id: crypto.randomUUID(),
+                    tool_calls: toolCalls,        // All tool calls
+                    tool_call: toolCalls[0],      // Backwards compat - first tool call
                     allowed_decisions: reviewConfig?.allowedDecisions || [
                       'approve',
                       'reject',
@@ -358,6 +360,7 @@ export class ElectronIPCTransport implements UseStreamTransport {
                 request: {
                   id: legacyInterrupt.id || crypto.randomUUID(),
                   tool_call: legacyInterrupt.tool_call,
+                  tool_calls: [legacyInterrupt.tool_call],  // Wrap in array for consistency
                   allowed_decisions: ['approve', 'reject', 'edit']
                 }
               }
@@ -654,35 +657,41 @@ export class ElectronIPCTransport implements UseStreamTransport {
         const actionRequests = interruptValue?.actionRequests
         const reviewConfigs = interruptValue?.reviewConfigs
 
-        // For each action request (tool call) that needs approval
+        // Extract ALL action requests (tool calls) that need approval
         if (actionRequests?.length) {
-          // Get the first action request for now (can be extended for batch approvals)
-          const firstAction = actionRequests[0]
-          const reviewConfig = reviewConfigs?.find((rc) => rc.actionName === firstAction.name)
+          // Build array of all tool calls from actionRequests
+          const toolCalls = actionRequests.map((action) => {
+            // The actionRequest may not include tool_call.id - look up from tracked tool calls
+            let toolCallId = action.id
 
-          // The actionRequest doesn't include tool_call.id - look up from tracked tool calls
-          let toolCallId: string | undefined
+            if (!toolCallId) {
+              // Find the tool call ID from our tracked completed tool calls
+              const trackedToolCalls = this.completedToolCallsByName.get(action.name)
+              if (trackedToolCalls && trackedToolCalls.length > 0) {
+                // Get the most recent tool call with this name
+                const lastTracked = trackedToolCalls[trackedToolCalls.length - 1]
+                toolCallId = lastTracked.id
+              }
+            }
 
-          // Find the tool call ID from our tracked completed tool calls
-          const trackedToolCalls = this.completedToolCallsByName.get(firstAction.name)
+            return {
+              id: toolCallId || crypto.randomUUID(),
+              name: action.name,
+              args: action.args || {}
+            }
+          })
 
-          if (trackedToolCalls && trackedToolCalls.length > 0) {
-            // Get the most recent tool call with this name
-            const lastTracked = trackedToolCalls[trackedToolCalls.length - 1]
-            toolCallId = lastTracked.id
-          }
+          // Get allowed decisions from the first review config (should be same for all)
+          const reviewConfig = reviewConfigs?.[0]
 
           events.push({
             event: 'custom',
             data: {
               type: 'interrupt',
               request: {
-                id: toolCallId || crypto.randomUUID(),
-                tool_call: {
-                  id: toolCallId,
-                  name: firstAction.name,
-                  args: firstAction.args || {}
-                },
+                id: crypto.randomUUID(),
+                tool_calls: toolCalls,        // All tool calls
+                tool_call: toolCalls[0],      // Backwards compat - first tool call
                 allowed_decisions: reviewConfig?.allowedDecisions || ['approve', 'reject', 'edit']
               }
             }

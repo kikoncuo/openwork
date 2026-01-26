@@ -33,6 +33,9 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
 
+  // Track decisions for each tool call in batch approval
+  const [toolDecisions, setToolDecisions] = useState<Map<string, 'approve' | 'reject'>>(new Map())
+
   const { loadThreads, generateTitleForFirstMessage, activeAgentId, threads, reassignThreadToAgent } = useAppStore()
 
   // Get persisted thread state and actions from context
@@ -56,13 +59,16 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
   const stream = streamData.stream
   const isLoading = streamData.isLoading
 
+  // Handler for single tool call decision (for backwards compat with single tool)
   const handleApprovalDecision = useCallback(
     async (decision: 'approve' | 'reject' | 'edit') => {
       if (!pendingApproval || !stream) return
 
       setPendingApproval(null)
+      setToolDecisions(new Map())
 
       try {
+        // For single tool call, use legacy format for backwards compat
         await stream.submit(null, {
           command: { resume: { decision } },
           config: { configurable: { thread_id: threadId, model_id: currentModel } }
@@ -73,6 +79,55 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     },
     [pendingApproval, setPendingApproval, stream, threadId, currentModel]
   )
+
+  // Handler to set individual tool decision (for batch approval UI)
+  const handleToolDecision = useCallback((toolCallId: string, decision: 'approve' | 'reject') => {
+    setToolDecisions(prev => new Map(prev).set(toolCallId, decision))
+  }, [])
+
+  // Approve all pending tool calls
+  const handleApproveAll = useCallback(() => {
+    if (!pendingApproval) return
+    const toolCalls = pendingApproval.tool_calls || (pendingApproval.tool_call ? [pendingApproval.tool_call] : [])
+    const newDecisions = new Map<string, 'approve' | 'reject'>()
+    toolCalls.forEach(tc => newDecisions.set(tc.id, 'approve'))
+    setToolDecisions(newDecisions)
+  }, [pendingApproval])
+
+  // Reject all pending tool calls
+  const handleRejectAll = useCallback(() => {
+    if (!pendingApproval) return
+    const toolCalls = pendingApproval.tool_calls || (pendingApproval.tool_call ? [pendingApproval.tool_call] : [])
+    const newDecisions = new Map<string, 'approve' | 'reject'>()
+    toolCalls.forEach(tc => newDecisions.set(tc.id, 'reject'))
+    setToolDecisions(newDecisions)
+  }, [pendingApproval])
+
+  // Submit all decisions when all tools have been decided
+  const handleSubmitAllDecisions = useCallback(async () => {
+    if (!pendingApproval || !stream) return
+
+    const toolCalls = pendingApproval.tool_calls || (pendingApproval.tool_call ? [pendingApproval.tool_call] : [])
+
+    // Check all tools have decisions
+    const allDecided = toolCalls.every(tc => toolDecisions.has(tc.id))
+    if (!allDecided) return
+
+    // Build decisions array in same order as tool calls
+    const decisions = toolCalls.map(tc => ({ type: toolDecisions.get(tc.id)! }))
+
+    setPendingApproval(null)
+    setToolDecisions(new Map())
+
+    try {
+      await stream.submit(null, {
+        command: { resume: { decisions } },  // Array of decisions
+        config: { configurable: { thread_id: threadId, model_id: currentModel } }
+      })
+    } catch (err) {
+      console.error('[ChatContainer] Batch resume command failed:', err)
+    }
+  }, [pendingApproval, toolDecisions, setPendingApproval, stream, threadId, currentModel])
 
   const agentValues = stream?.values as AgentStreamValues | undefined
   const streamTodos = agentValues?.todos
@@ -296,12 +351,17 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
             )}
 
             {displayMessages.map((message) => (
-              <MessageBubble 
-                key={message.id} 
-                message={message} 
+              <MessageBubble
+                key={message.id}
+                message={message}
                 toolResults={toolResults}
                 pendingApproval={pendingApproval}
+                toolDecisions={toolDecisions}
                 onApprovalDecision={handleApprovalDecision}
+                onToolDecision={handleToolDecision}
+                onApproveAll={handleApproveAll}
+                onRejectAll={handleRejectAll}
+                onSubmitAllDecisions={handleSubmitAllDecisions}
               />
             ))}
 
