@@ -90,7 +90,7 @@ router.post('/', async (req, res) => {
     const threadId = uuid()
     const title = (metadata?.title as string) || `Thread ${new Date().toLocaleDateString()}`
 
-    // Get the agent to check for default workspace path (must belong to user)
+    // Get the agent (must belong to user)
     let agent = agentId ? getAgent(agentId) : null
     if (agent && agent.user_id !== userId) {
       res.status(403).json({ error: 'Cannot create thread with agent from another user' })
@@ -111,13 +111,11 @@ router.post('/', async (req, res) => {
         })
       }
     }
-    const workspacePath = metadata?.workspacePath || agent?.default_workspace_path || null
 
-    // Merge the agent's default workspace into metadata
+    // Thread metadata (no workspacePath needed - E2B sandbox handles files)
     const finalMetadata = {
       ...metadata,
-      title,
-      ...(workspacePath ? { workspacePath } : {})
+      title
     }
 
     const thread = dbCreateThread(threadId, finalMetadata, agent?.agent_id, userId)

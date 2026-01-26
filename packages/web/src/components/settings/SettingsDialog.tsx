@@ -14,7 +14,6 @@ import { Switch } from '@/components/ui/switch'
 import { useAppStore } from '@/lib/store'
 import { AgentIconComponent, AGENT_ICON_LABELS } from '@/lib/agent-icons'
 import { AppsTab } from './apps/AppsTab'
-import { WorkspaceBrowser } from '@/components/workspace/WorkspaceBrowser'
 import type { AgentIcon } from '@/types'
 
 interface SettingsDialogProps {
@@ -147,8 +146,6 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
   const [agentColor, setAgentColor] = useState(AGENT_COLORS[0])
   const [agentIcon, setAgentIcon] = useState<AgentIcon>('bot')
   const [agentModel, setAgentModel] = useState('')
-  const [agentWorkspacePath, setAgentWorkspacePath] = useState<string | null>(null)
-  const [workspaceBrowserOpen, setWorkspaceBrowserOpen] = useState(false)
   const [savingAgent, setSavingAgent] = useState(false)
 
   // API keys state (global, shared across agents)
@@ -279,14 +276,12 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
       setAgentColor(existingAgent.color)
       setAgentIcon(existingAgent.icon)
       setAgentModel(existingAgent.model_default)
-      setAgentWorkspacePath(existingAgent.default_workspace_path || null)
     } else {
       // New agent defaults
       setAgentName('')
       setAgentColor(AGENT_COLORS[0])
       setAgentIcon('bot')
       setAgentModel(models[0]?.id || '')
-      setAgentWorkspacePath(null)
     }
 
     // Load API keys (global)
@@ -455,7 +450,6 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
           color: agentColor,
           icon: agentIcon,
           model_default: agentModel,
-          default_workspace_path: agentWorkspacePath,
         })
         onOpenChange(false)
       } else if (targetAgentId) {
@@ -464,7 +458,6 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
           color: agentColor,
           icon: agentIcon,
           model_default: agentModel,
-          default_workspace_path: agentWorkspacePath,
         })
       }
     } catch (error) {
@@ -472,17 +465,6 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
     } finally {
       setSavingAgent(false)
     }
-  }
-
-  // Open workspace browser dialog
-  function handleSelectWorkspace() {
-    setWorkspaceBrowserOpen(true)
-  }
-
-  // Handle workspace selection from browser
-  function handleWorkspaceSelected(selectedPath: string) {
-    setAgentWorkspacePath(selectedPath)
-    setWorkspaceBrowserOpen(false)
   }
 
   // API key handlers
@@ -906,50 +888,6 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
                         </option>
                       ))}
                     </select>
-                  </div>
-
-                  {/* Default Workspace */}
-                  <div className="grid gap-2">
-                    <Label htmlFor="agent-workspace">Default Workspace</Label>
-                    <div className="flex gap-2">
-                      <div className="flex-1 flex items-center gap-2 px-3 py-2 border border-input rounded-md bg-background text-sm min-h-10">
-                        {agentWorkspacePath ? (
-                          <>
-                            <FolderOpen className="size-4 text-muted-foreground shrink-0" />
-                            <span className="truncate" title={agentWorkspacePath}>
-                              {agentWorkspacePath.split('/').pop() || agentWorkspacePath}
-                            </span>
-                          </>
-                        ) : (
-                          <span className="text-muted-foreground">No folder selected</span>
-                        )}
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={handleSelectWorkspace}
-                        className="shrink-0"
-                      >
-                        <FolderOpen className="size-4 mr-1" />
-                        Browse
-                      </Button>
-                      {agentWorkspacePath && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setAgentWorkspacePath(null)}
-                          className="shrink-0 text-muted-foreground hover:text-foreground"
-                          title="Clear workspace"
-                        >
-                          <XCircle className="size-4" />
-                        </Button>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      New threads will use this folder as their default workspace.
-                    </p>
                   </div>
 
                   {/* Save Agent Button */}
@@ -1588,13 +1526,6 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
         </div>
       </DialogContent>
     </Dialog>
-
-    <WorkspaceBrowser
-      open={workspaceBrowserOpen}
-      onOpenChange={setWorkspaceBrowserOpen}
-      onSelect={handleWorkspaceSelected}
-      initialPath={agentWorkspacePath || undefined}
-    />
     </>
   )
 }

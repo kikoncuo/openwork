@@ -15,6 +15,7 @@ import QRCode from 'qrcode'
 import { getAuthStore, SQLiteAuthState } from './auth-store.js'
 import { getMessageStore } from './message-store.js'
 import type { ContactInfo, ChatInfo, MessageInfo, ConnectionStatus, SendMessageResult } from './types.js'
+import { hookManager } from '../../hooks/hook-manager.js'
 
 // Create a pino-compatible logger that wraps console
 // Baileys expects logger.child() which returns a new logger with extra context
@@ -70,6 +71,10 @@ class WhatsAppSocketManager {
   // Let's add isUserInitiated to WhatsAppSession or track it separately.
   // The original code had `isUserInitiated` as a class property.
   private userInitiatedStates = new Map<string, boolean>()
+
+  // Health tracking
+  private phoneOnlineStatus = new Map<string, boolean>()
+  private lastActivityTimes = new Map<string, number>()
 
   private getOrCreateSession(userId: string): WhatsAppSession {
     let session = this.sessions.get(userId)
@@ -205,7 +210,43 @@ class WhatsAppSocketManager {
 
         // Handle connection updates
         sock.ev.on('connection.update', async (update: any) => {
-          const { connection, lastDisconnect, qr } = update
+          const { connection, lastDisconnect, qr, isOnline } = update
+
+          // Track phone online status for health monitoring
+          if (isOnline !== undefined) {
+            const wasOnline = this.phoneOnlineStatus.get(userId)
+            this.phoneOnlineStatus.set(userId, isOnline)
+
+            // Emit health warning if phone went offline
+            if (wasOnline === true && isOnline === false) {
+              console.log(`[WhatsApp] User ${userId} phone appears offline`)
+              hookManager.emit({
+                type: 'app:health_warning',
+                userId,
+                source: 'whatsapp',
+                payload: {
+                  appType: 'whatsapp',
+                  warning: 'Phone appears offline',
+                  recommendation: 'Check your phone connection'
+                }
+              }).catch(err => console.error('[WhatsApp] Error emitting health warning:', err))
+            }
+
+            // Emit health cleared if phone came back online
+            if (wasOnline === false && isOnline === true) {
+              console.log(`[WhatsApp] User ${userId} phone is back online`)
+              hookManager.emit({
+                type: 'app:health_cleared',
+                userId,
+                source: 'whatsapp',
+                payload: {
+                  appType: 'whatsapp',
+                  status: 'connected',
+                  healthStatus: 'healthy'
+                }
+              }).catch(err => console.error('[WhatsApp] Error emitting health cleared:', err))
+            }
+          }
 
           if (qr) {
             console.log(`[WhatsApp] User ${userId} QR code received`)
@@ -380,20 +421,24 @@ class WhatsAppSocketManager {
 
         // Handle new messages
         sock.ev.on('messages.upsert', async ({ messages }: any) => {
+          console.log(`[WhatsApp] User ${userId} messages.upsert received: ${messages.length} messages`)
           const messageStore = getMessageStore()
           for (const msg of messages) {
             if (msg.key?.id) {
               const formattedMessage = this.formatMessage(msg)
+              console.log(`[WhatsApp] User ${userId} message: fromMe=${formattedMessage.fromMe}, from=${formattedMessage.from}, content=${formattedMessage.content?.substring(0, 50)}`)
               messageStore.saveMessage(formattedMessage, userId)
               this.extractChatAndContactFromMessage(session, msg)
 
               // Trigger agent if configured and not fromMe
               if (!formattedMessage.fromMe) {
+                console.log(`[WhatsApp] User ${userId} triggering hook for incoming message`)
                 this.triggerAgentIfConfigured(userId, formattedMessage)
               }
             }
           }
           session.lastActivity = new Date()
+          this.lastActivityTimes.set(userId, Date.now())
           // Persist chats to database so they survive server restarts
           this.persistChats(userId)
         })
@@ -459,6 +504,24 @@ class WhatsAppSocketManager {
   isConnected(userId: string): boolean {
     const session = this.getSession(userId)
     return session?.connectionState === 'open'
+  }
+
+  /**
+   * Check if phone is online (for health checks)
+   */
+  isPhoneOnline(userId: string): boolean | undefined {
+    return this.phoneOnlineStatus.get(userId)
+  }
+
+  /**
+   * Get last activity time (for health checks)
+   */
+  getLastActivityTime(userId: string): number | undefined {
+    const session = this.getSession(userId)
+    if (session?.lastActivity) {
+      return session.lastActivity.getTime()
+    }
+    return this.lastActivityTimes.get(userId)
   }
 
   /**
@@ -529,6 +592,7 @@ class WhatsAppSocketManager {
       const sent = await session.socket.sendMessage(jid, { text })
       console.log(`[WhatsApp] User ${userId} sent message to ${jid}`)
       session.lastActivity = new Date()
+      this.lastActivityTimes.set(userId, Date.now())
 
       // Save to store
       if (sent?.key?.id) {
@@ -804,25 +868,34 @@ class WhatsAppSocketManager {
   }
 
   /**
-   * Trigger agent handler if auto-agent is configured for this user.
+   * Trigger message handling via hook system.
+   * Emits a message:received event for all registered handlers to process.
    * Runs asynchronously in the background.
    */
   private async triggerAgentIfConfigured(userId: string, message: MessageInfo): Promise<void> {
-    // Import dynamically to avoid circular dependencies
     try {
-      const { handleIncomingMessage, isAutoAgentEnabled } = await import('./agent-handler.js')
+      // Get contact info for the sender
+      const messageStore = getMessageStore()
+      const contacts = messageStore.getContacts(userId)
+      const contact = contacts.find(c => c.jid === message.from) || null
+      const contactName = contact?.name || contact?.pushName || message.senderName || message.from.split('@')[0]
 
-      // Check if auto-agent is enabled before processing
-      if (!isAutoAgentEnabled(userId)) {
-        return
-      }
-
-      // Handle message asynchronously (don't await to not block message processing)
-      handleIncomingMessage(userId, message).catch(error => {
-        console.error(`[WhatsApp] Error triggering agent for user ${userId}:`, error)
+      // Emit message:received event to the hook system
+      // Don't await to not block message processing - handlers run asynchronously
+      hookManager.emit({
+        type: 'message:received',
+        userId,
+        source: 'whatsapp',
+        payload: {
+          message,
+          jid: message.isGroup ? message.to : message.from,
+          contactName
+        }
+      }).catch(error => {
+        console.error(`[WhatsApp] Error emitting message:received event for user ${userId}:`, error)
       })
     } catch (error) {
-      console.error('[WhatsApp] Error loading agent handler:', error)
+      console.error('[WhatsApp] Error in triggerAgentIfConfigured:', error)
     }
   }
 

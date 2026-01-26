@@ -28,8 +28,8 @@ interface AppState {
   // Agent actions
   loadAgents: () => Promise<void>
   setActiveAgent: (agentId: string) => void
-  createAgent: (input: { name: string; color?: string; icon?: string; model_default?: string; default_workspace_path?: string | null }) => Promise<Agent>
-  updateAgent: (agentId: string, updates: { name?: string; color?: string; icon?: string; model_default?: string; default_workspace_path?: string | null }) => Promise<Agent | null>
+  createAgent: (input: { name: string; color?: string; icon?: string; model_default?: string }) => Promise<Agent>
+  updateAgent: (agentId: string, updates: { name?: string; color?: string; icon?: string; model_default?: string }) => Promise<Agent | null>
   deleteAgent: (agentId: string) => Promise<{ success: boolean; error?: string; reassignedThreads?: number }>
   /** Open settings. null = create new agent, string = edit specific agent, undefined = edit active agent */
   openSettings: (agentId?: string | null) => void

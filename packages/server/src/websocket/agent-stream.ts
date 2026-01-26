@@ -33,7 +33,7 @@ export function registerAgentStreamHandlers(socket: Socket): void {
     activeRuns.set(threadId, abortController)
 
     try {
-      // Get workspace path from thread metadata - REQUIRED
+      // Verify thread exists and user has access
       const thread = getThread(threadId)
 
       // Check ownership
@@ -46,19 +46,17 @@ export function registerAgentStreamHandlers(socket: Socket): void {
         return
       }
 
-      const metadata = thread?.metadata ? JSON.parse(thread.metadata) : {}
-      const workspacePath = metadata.workspacePath as string | undefined
-
-      if (!workspacePath) {
+      // Check that thread has an agent assigned (required for E2B sandbox)
+      if (!thread.agent_id) {
         socket.emit(channel, {
           type: 'error',
-          error: 'WORKSPACE_REQUIRED',
-          message: 'Please select a workspace folder before sending messages.'
+          error: 'AGENT_REQUIRED',
+          message: 'Please assign an agent to this thread before sending messages.'
         })
         return
       }
 
-      const agent = await createAgentRuntime({ threadId, workspacePath, modelId })
+      const agent = await createAgentRuntime({ threadId, modelId })
       const humanMessage = new HumanMessage(message)
 
       // Stream with both modes
@@ -116,7 +114,7 @@ export function registerAgentStreamHandlers(socket: Socket): void {
 
     console.log('[Agent] Received resume request:', { threadId, command, modelId, userId })
 
-    // Get workspace path from thread metadata
+    // Verify thread exists and user has access
     const thread = getThread(threadId)
 
     // Check ownership
@@ -128,13 +126,11 @@ export function registerAgentStreamHandlers(socket: Socket): void {
       return
     }
 
-    const metadata = thread?.metadata ? JSON.parse(thread.metadata) : {}
-    const workspacePath = metadata.workspacePath as string | undefined
-
-    if (!workspacePath) {
+    // Check that thread has an agent assigned
+    if (!thread.agent_id) {
       socket.emit(channel, {
         type: 'error',
-        error: 'Workspace path is required'
+        error: 'Agent assignment is required'
       })
       return
     }
@@ -150,7 +146,7 @@ export function registerAgentStreamHandlers(socket: Socket): void {
     activeRuns.set(threadId, abortController)
 
     try {
-      const agent = await createAgentRuntime({ threadId, workspacePath, modelId })
+      const agent = await createAgentRuntime({ threadId, modelId })
       const config = {
         configurable: { thread_id: threadId },
         signal: abortController.signal,
@@ -201,7 +197,7 @@ export function registerAgentStreamHandlers(socket: Socket): void {
     const channel = `agent:stream:${threadId}`
     const userId = socket.user?.userId
 
-    // Get workspace path from thread metadata - REQUIRED
+    // Verify thread exists and user has access
     const thread = getThread(threadId)
 
     // Check ownership
@@ -213,13 +209,11 @@ export function registerAgentStreamHandlers(socket: Socket): void {
       return
     }
 
-    const metadata = thread?.metadata ? JSON.parse(thread.metadata) : {}
-    const workspacePath = metadata.workspacePath as string | undefined
-
-    if (!workspacePath) {
+    // Check that thread has an agent assigned
+    if (!thread.agent_id) {
       socket.emit(channel, {
         type: 'error',
-        error: 'Workspace path is required'
+        error: 'Agent assignment is required'
       })
       return
     }
@@ -235,7 +229,7 @@ export function registerAgentStreamHandlers(socket: Socket): void {
     activeRuns.set(threadId, abortController)
 
     try {
-      const agent = await createAgentRuntime({ threadId, workspacePath })
+      const agent = await createAgentRuntime({ threadId })
       const config = {
         configurable: { thread_id: threadId },
         signal: abortController.signal,

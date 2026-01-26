@@ -11,9 +11,7 @@ import {
   XCircle,
   GripHorizontal,
   Download,
-  FolderSync,
   Loader2,
-  Check,
   Folder,
   FolderOpen,
   File,
@@ -26,14 +24,14 @@ import {
   Upload,
   AlertTriangle,
   HardDrive,
-  RotateCcw
+  RotateCcw,
+  Trash2
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/lib/store'
 import { useThreadState } from '@/lib/thread-context'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { WorkspaceBrowser } from '@/components/workspace/WorkspaceBrowser'
 import type { Todo } from '@/types'
 
 const HEADER_HEIGHT = 40 // px
@@ -515,43 +513,37 @@ function TaskItem({ todo }: { todo: Todo }): React.JSX.Element {
 }
 
 function FilesContent(): React.JSX.Element {
-  const { currentThreadId, threads } = useAppStore()
+  const { currentThreadId, activeAgentId } = useAppStore()
   const threadState = useThreadState(currentThreadId)
   const workspaceFiles = threadState?.workspaceFiles ?? []
-  const workspacePath = threadState?.workspacePath ?? null
-  const setWorkspacePath = threadState?.setWorkspacePath
   const setWorkspaceFiles = threadState?.setWorkspaceFiles
-  const [syncing, setSyncing] = useState(false)
-  const [syncSuccess, setSyncSuccess] = useState(false)
-  const [sandboxEnabled, setSandboxEnabled] = useState(false)
-  const [browserOpen, setBrowserOpen] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [sandboxError, setSandboxError] = useState(false)
+  const [restoring, setRestoring] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Get current thread's agent_id - used to track when agent changes
-  const currentThread = threads.find(t => t.thread_id === currentThreadId)
-  const agentId = currentThread?.agent_id
+  // Use the actively selected agent from the top tabs
+  const agentId = activeAgentId
 
   // Backup status state
   const [backupStatus, setBackupStatus] = useState<{
     schedulerActive: boolean
     backup: { fileCount: number; totalSize: number; updatedAt: number } | null
   } | null>(null)
-  const [sandboxError, setSandboxError] = useState(false)
-  const [restoring, setRestoring] = useState(false)
 
   // Check sandbox status on mount and when agent changes
   useEffect(() => {
     async function checkSandboxStatus(): Promise<void> {
-      // Guard: only check sandbox status if agentId is defined to prevent race conditions
-      // when a new thread is created but the threads array hasn't updated yet
-      if (currentThreadId && agentId) {
+      if (agentId) {
         try {
-          const status = await window.api.workspace.sandboxStatus(currentThreadId)
-          setSandboxEnabled(status.enabled)
-          setSandboxError(false)
+          // Use agentId directly if available, fall back to threadId
+          const status = currentThreadId
+            ? await window.api.workspace.sandboxStatus(currentThreadId)
+            : { enabled: true } // Assume enabled if no thread
+          setSandboxError(!status.enabled)
         } catch (e) {
           console.error('[FilesContent] Error checking sandbox status:', e)
-          setSandboxEnabled(false)
-          // Check if this looks like a sandbox error
           const errorMsg = e instanceof Error ? e.message : String(e)
           if (errorMsg.toLowerCase().includes('sandbox') || errorMsg.toLowerCase().includes('paused')) {
             setSandboxError(true)
@@ -560,20 +552,18 @@ function FilesContent(): React.JSX.Element {
       }
     }
     checkSandboxStatus()
-  }, [currentThreadId, agentId])  // Added agentId dependency
+  }, [currentThreadId, agentId])
 
-  // Fetch backup status periodically when sandbox is enabled
-  // Also refetch when agent changes since backups are per-agent
+  // Fetch backup status periodically
   useEffect(() => {
-    // Guard: only fetch backup status if agentId is defined
-    if (!currentThreadId || !sandboxEnabled || !agentId) {
+    if (!agentId) {
       setBackupStatus(null)
       return
     }
 
     async function fetchBackupStatus(): Promise<void> {
       try {
-        const result = await window.api.workspace.sandboxBackupStatus(currentThreadId!)
+        const result = await window.api.workspace.sandboxBackupStatus({ agentId: agentId! })
         if (result.success) {
           setBackupStatus({
             schedulerActive: result.schedulerActive,
@@ -585,13 +575,10 @@ function FilesContent(): React.JSX.Element {
       }
     }
 
-    // Fetch immediately
     fetchBackupStatus()
-
-    // Poll every 30 seconds
     const interval = setInterval(fetchBackupStatus, 30000)
     return () => clearInterval(interval)
-  }, [currentThreadId, sandboxEnabled, agentId])  // Added agentId dependency
+  }, [agentId])
 
   // Handle manual backup
   async function handleManualBackup(): Promise<void> {
@@ -608,21 +595,15 @@ function FilesContent(): React.JSX.Element {
 
   // Handle restore from backup
   async function handleRestore(): Promise<void> {
-    if (!currentThreadId) return
+    if (!currentThreadId || !agentId) return
     setRestoring(true)
     try {
       const result = await window.api.workspace.sandboxRestore(currentThreadId)
       if (result.success) {
         console.log(`[FilesContent] Restored ${result.filesRestored} files to new sandbox ${result.sandboxId}`)
         setSandboxError(false)
-        // Reload sandbox files
-        const filesResult = await window.api.workspace.sandboxFiles(currentThreadId)
-        if (filesResult.success && filesResult.files && setWorkspaceFiles) {
-          setWorkspaceFiles(filesResult.files.map(f => ({
-            path: f.path,
-            is_dir: f.is_dir
-          })))
-        }
+        // Reload files from backup
+        await handleRefresh()
       } else {
         console.error('[FilesContent] Restore failed:', result.error)
       }
@@ -633,161 +614,84 @@ function FilesContent(): React.JSX.Element {
     }
   }
 
-  // Load workspace path and files for current thread
-  // Also reload when agent changes (since each agent has its own sandbox)
-  useEffect(() => {
-    async function loadWorkspace(): Promise<void> {
-      if (currentThreadId && setWorkspacePath && setWorkspaceFiles) {
-        const path = await window.api.workspace.get(currentThreadId)
-        setWorkspacePath(path)
+  // Handle file upload
+  async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+    const files = event.target.files
+    if (!files || files.length === 0 || !agentId) return
 
-        // If sandbox is enabled, load from sandbox. Otherwise, load from local disk.
-        // Note: API still uses threadId - backend resolves to agentId
-        // Guard: only load sandbox files if agentId is defined to prevent race conditions
-        // when a new thread is created but the threads array hasn't updated yet
-        if (sandboxEnabled && agentId) {
-          try {
-            const result = await window.api.workspace.sandboxFiles(currentThreadId)
-            if (result.success && result.files) {
-              setWorkspaceFiles(result.files.map(f => ({
-                path: f.path,
-                is_dir: f.is_dir
-              })))
-            }
-          } catch (e) {
-            console.error('[FilesContent] Error loading sandbox files:', e)
-          }
-        } else if (path) {
-          // Load files from local disk
-          const result = await window.api.workspace.loadFromDisk(currentThreadId)
-          if (result.success && result.files) {
-            setWorkspaceFiles(result.files)
-          }
-        }
-      }
-    }
-    loadWorkspace()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentThreadId, sandboxEnabled, agentId])  // Added agentId dependency
-
-  // Listen for file changes from the workspace watcher
-  useEffect(() => {
-    if (!currentThreadId || !setWorkspaceFiles) return
-
-    const cleanup = window.api.workspace.onFilesChanged(currentThreadId, async (data: { threadId: string; workspacePath: string }) => {
-      // Only reload if the event is for the current thread
-      if (data.threadId === currentThreadId) {
-        console.log('[FilesContent] Files changed, reloading...', data)
-        const result = await window.api.workspace.loadFromDisk(currentThreadId)
-        if (result.success && result.files) {
-          setWorkspaceFiles(result.files)
-        }
-      }
-    })
-
-    return cleanup
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentThreadId])
-
-  // Open the workspace browser dialog
-  function handleSelectFolder(): void {
-    setBrowserOpen(true)
-  }
-
-  // Handle folder selection from WorkspaceBrowser (receives full path)
-  async function handleBrowserSelect(selectedPath: string): Promise<void> {
-    if (!currentThreadId || !setWorkspacePath || !setWorkspaceFiles) return
-    setSyncing(true)
+    setUploading(true)
     try {
-      setWorkspacePath(selectedPath)
-
-      // If sandbox is enabled, upload the folder to the sandbox
-      if (sandboxEnabled) {
-        console.log('[FilesContent] Uploading folder to E2B sandbox:', selectedPath)
-        const uploadResult = await window.api.workspace.sandboxUploadFolder(currentThreadId, selectedPath)
-        if (uploadResult.success) {
-          console.log(`[FilesContent] Uploaded ${uploadResult.filesUploaded} files to sandbox`)
-          // Reload sandbox files
-          const filesResult = await window.api.workspace.sandboxFiles(currentThreadId)
-          if (filesResult.success && filesResult.files) {
-            setWorkspaceFiles(filesResult.files.map(f => ({
-              path: f.path,
-              is_dir: f.is_dir
-            })))
-          }
-          setSyncSuccess(true)
-          setTimeout(() => setSyncSuccess(false), 2000)
-        } else {
-          console.error('[FilesContent] Upload to sandbox failed:', uploadResult.error)
-        }
-      } else {
-        // Set workspace path on server
-        await window.api.workspace.set(currentThreadId, selectedPath)
-        // Load files from the newly selected local folder
-        const result = await window.api.workspace.loadFromDisk(currentThreadId)
-        if (result.success && result.files) {
-          setWorkspaceFiles(result.files)
-        }
+      for (const file of Array.from(files)) {
+        const content = await file.text()
+        const filePath = `/home/user/${file.name}`
+        await window.api.workspace.backupWriteFile(agentId, filePath, content)
       }
+      // Refresh file list after upload
+      await handleRefresh()
     } catch (e) {
-      console.error('[FilesContent] Select folder error:', e)
+      console.error('[FilesContent] Upload error:', e)
     } finally {
-      setSyncing(false)
-    }
-  }
-
-  // Handle sync to disk - downloads files from E2B sandbox to local folder
-  async function handleSyncToDisk(): Promise<void> {
-    if (!currentThreadId) return
-
-    // If no files, just select a folder
-    if (workspaceFiles.length === 0) {
-      await handleSelectFolder()
-      return
-    }
-
-    // Only works with sandbox enabled
-    if (!sandboxEnabled) {
-      console.warn('[FilesContent] Sync to disk only works with E2B sandbox enabled')
-      return
-    }
-
-    setSyncing(true)
-    try {
-      const result = await window.api.workspace.sandboxSyncToLocal(currentThreadId)
-      if (result.success) {
-        console.log(`[FilesContent] Synced ${result.filesDownloaded} files to local folder`)
-        setSyncSuccess(true)
-        // Reset success indicator after 2 seconds
-        setTimeout(() => setSyncSuccess(false), 2000)
-      } else {
-        console.error('[FilesContent] Sync to local failed:', result.error)
+      setUploading(false)
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
       }
-    } catch (e) {
-      console.error('[FilesContent] Sync to disk error:', e)
-    } finally {
-      setSyncing(false)
     }
   }
 
-  // Handle refresh - reload file list
-  const [refreshing, setRefreshing] = useState(false)
-  async function handleRefresh(): Promise<void> {
-    if (!currentThreadId || !setWorkspaceFiles) return
-    setRefreshing(true)
-    try {
-      if (sandboxEnabled) {
-        const result = await window.api.workspace.sandboxFiles(currentThreadId)
-        if (result.success && result.files) {
-          setWorkspaceFiles(result.files.map(f => ({
+  // Load files - backup-first approach
+  useEffect(() => {
+    async function loadFiles(): Promise<void> {
+      if (!setWorkspaceFiles || !agentId) return
+
+      try {
+        // Step 1: Try backup first (always available, no sandbox needed)
+        const backupResult = await window.api.workspace.backupListFiles(agentId)
+        if (backupResult.success && backupResult.files && backupResult.files.length > 0) {
+          setWorkspaceFiles(backupResult.files.map(f => ({
+            path: f.path,
+            is_dir: f.is_dir,
+            size: f.size
+          })))
+          return
+        }
+
+        // Step 2: Fallback to sandbox if backup is empty
+        const sandboxResult = await window.api.workspace.sandboxFiles({ agentId })
+        if (sandboxResult.success && sandboxResult.files) {
+          setWorkspaceFiles(sandboxResult.files.map(f => ({
             path: f.path,
             is_dir: f.is_dir
           })))
         }
-      } else if (workspacePath) {
-        const result = await window.api.workspace.loadFromDisk(currentThreadId)
-        if (result.success && result.files) {
-          setWorkspaceFiles(result.files)
+      } catch (e) {
+        console.error('[FilesContent] Error loading files:', e)
+      }
+    }
+    loadFiles()
+  }, [agentId, setWorkspaceFiles])
+
+  // Handle refresh - reload file list (backup-first)
+  async function handleRefresh(): Promise<void> {
+    if (!agentId || !setWorkspaceFiles) return
+    setRefreshing(true)
+    try {
+      // Try backup first
+      const backupResult = await window.api.workspace.backupListFiles(agentId)
+      if (backupResult.success && backupResult.files && backupResult.files.length > 0) {
+        setWorkspaceFiles(backupResult.files.map(f => ({
+          path: f.path,
+          is_dir: f.is_dir,
+          size: f.size
+        })))
+      } else {
+        // Fallback to sandbox
+        const sandboxResult = await window.api.workspace.sandboxFiles({ agentId })
+        if (sandboxResult.success && sandboxResult.files) {
+          setWorkspaceFiles(sandboxResult.files.map(f => ({
+            path: f.path,
+            is_dir: f.is_dir
+          })))
         }
       }
     } catch (e) {
@@ -796,6 +700,47 @@ function FilesContent(): React.JSX.Element {
       setRefreshing(false)
     }
   }
+
+  // Handle file delete
+  const handleDelete = useCallback(async (filePath: string): Promise<void> => {
+    if (!agentId || !setWorkspaceFiles) return
+
+    // Confirm deletion
+    if (!confirm(`Delete ${filePath}?`)) return
+
+    try {
+      await window.api.workspace.backupDeleteFile(agentId, filePath)
+      // Refresh file list
+      await handleRefresh()
+    } catch (e) {
+      console.error('[FilesContent] Delete error:', e)
+    }
+  }, [agentId, setWorkspaceFiles])
+
+  // Handle file download
+  const handleDownload = useCallback(async (filePath: string, fileName: string): Promise<void> => {
+    if (!agentId) return
+
+    try {
+      const result = await window.api.workspace.backupReadFile(agentId, filePath)
+      if (result.success && result.content !== undefined) {
+        // Create blob and trigger download
+        const blob = new Blob([result.content], { type: 'text/plain' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = fileName
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      } else {
+        console.error('[FilesContent] Download failed:', result.error)
+      }
+    } catch (e) {
+      console.error('[FilesContent] Download error:', e)
+    }
+  }, [agentId])
 
   // Format relative time for backup
   function formatRelativeTime(timestamp: number): string {
@@ -810,169 +755,121 @@ function FilesContent(): React.JSX.Element {
   }
 
   return (
-    <>
-      <div className="flex flex-col h-full">
-        {/* Recovery banner when sandbox is disconnected but backup exists */}
-        {sandboxError && backupStatus?.backup && (
-          <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-400">
-            <AlertTriangle className="size-4 shrink-0" />
-            <span className="text-xs flex-1">
-              Sandbox disconnected. {backupStatus.backup.fileCount} files backed up.
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleRestore}
-              disabled={restoring}
-              className="h-5 px-2 text-[10px] bg-amber-500/20 hover:bg-amber-500/30 text-amber-300"
-            >
-              {restoring ? (
-                <Loader2 className="size-3 animate-spin" />
-              ) : (
-                <RotateCcw className="size-3" />
-              )}
-              <span className="ml-1">Recover</span>
-            </Button>
-          </div>
-        )}
-
-        {/* Header with action buttons */}
-        <div className="flex items-center justify-between px-3 py-2 border-b border-border/50 bg-background/30">
-          <div className="flex items-center gap-1.5 flex-1 min-w-0">
-            {sandboxEnabled && (
-              <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-400 font-medium shrink-0">
-                E2B
-              </span>
+    <div className="flex flex-col h-full">
+      {/* Recovery banner when sandbox is disconnected but backup exists */}
+      {sandboxError && backupStatus?.backup && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-400">
+          <AlertTriangle className="size-4 shrink-0" />
+          <span className="text-xs flex-1">
+            Sandbox disconnected. {backupStatus.backup.fileCount} files backed up.
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleRestore}
+            disabled={restoring}
+            className="h-5 px-2 text-[10px] bg-amber-500/20 hover:bg-amber-500/30 text-amber-300"
+          >
+            {restoring ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <RotateCcw className="size-3" />
             )}
-            <span
-              className="text-[10px] text-muted-foreground truncate"
-              title={workspacePath || undefined}
-            >
-              {workspacePath ? workspacePath.split('/').pop() : 'No folder linked'}
-            </span>
-          </div>
-          <div className="flex items-center gap-1">
-            {/* Refresh button - only show when there are files or sandbox is enabled */}
-            {(workspaceFiles.length > 0 || sandboxEnabled) && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleRefresh}
-                disabled={refreshing || !currentThreadId}
-                className="h-5 px-1.5"
-                title="Refresh file list"
-              >
-                <RefreshCw className={cn("size-3", refreshing && "animate-spin")} />
-              </Button>
-            )}
-            {/* Upload button - always show when sandbox is enabled */}
-            {sandboxEnabled && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleSelectFolder}
-                disabled={syncing || !currentThreadId}
-                className="h-5 px-1.5 text-[10px]"
-                title="Upload a local folder to E2B sandbox"
-              >
-                <Upload className="size-3" />
-                <span className="ml-1">Upload</span>
-              </Button>
-            )}
-            {/* Download/Sync button */}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={sandboxEnabled ? handleSyncToDisk : (workspaceFiles.length > 0 ? handleSyncToDisk : handleSelectFolder)}
-              disabled={syncing || !currentThreadId || (sandboxEnabled && workspaceFiles.length === 0)}
-              className="h-5 px-1.5 text-[10px]"
-              title={
-                sandboxEnabled
-                  ? `Download files from E2B sandbox to ${workspacePath || 'local folder'}`
-                  : workspaceFiles.length > 0
-                    ? 'Sync files to disk'
-                    : workspacePath
-                      ? 'Change folder'
-                      : 'Link sync folder'
-              }
-            >
-              {syncing ? (
-                <Loader2 className="size-3 animate-spin" />
-              ) : syncSuccess ? (
-                <Check className="size-3 text-status-nominal" />
-              ) : sandboxEnabled ? (
-                <Download className="size-3" />
-              ) : workspaceFiles.length > 0 ? (
-                <Download className="size-3" />
-              ) : (
-                <FolderSync className="size-3" />
-              )}
-              <span className="ml-1">
-                {sandboxEnabled
-                  ? 'Download'
-                  : workspaceFiles.length > 0
-                    ? 'Sync'
-                    : workspacePath
-                      ? 'Change'
-                      : 'Link'}
-              </span>
-            </Button>
-          </div>
+            <span className="ml-1">Recover</span>
+          </Button>
         </div>
+      )}
 
-        {/* Backup status indicator (only when sandbox is enabled and has backup) */}
-        {sandboxEnabled && backupStatus?.backup && !sandboxError && (
-          <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/30 bg-background/20 text-[10px]">
-            <div className="flex items-center gap-1.5 text-muted-foreground">
-              <HardDrive className="size-3" />
-              <span>
-                Backed up: {backupStatus.backup.fileCount} files ({formatSize(backupStatus.backup.totalSize)})
-              </span>
-              <span className="text-muted-foreground/70">
-                · {formatRelativeTime(backupStatus.backup.updatedAt)}
-              </span>
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleManualBackup}
-              className="h-4 px-1.5 text-[9px] text-muted-foreground hover:text-foreground"
-              title="Backup now"
-            >
-              <HardDrive className="size-2.5" />
-              <span className="ml-1">Backup</span>
-            </Button>
-          </div>
-        )}
+      {/* Hidden file input for uploads */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        onChange={handleFileUpload}
+        className="hidden"
+        accept="*/*"
+      />
 
-        {/* File tree or empty state */}
-        {workspaceFiles.length === 0 ? (
-          <div className="flex flex-col items-center justify-center text-center text-sm text-muted-foreground py-8 px-4 flex-1">
-            <FolderTree className="size-8 mb-2 opacity-50" />
-            <span>No workspace files</span>
-            <span className="text-xs mt-1">
-              {sandboxEnabled
-                ? 'Click "Upload" to upload a local folder to the E2B sandbox'
-                : workspacePath
-                  ? `Linked to ${workspacePath.split('/').pop()}`
-                  : 'Click "Link" to set a sync folder'}
-            </span>
-          </div>
-        ) : (
-          <div className="py-1 overflow-auto flex-1">
-            <FileTree files={workspaceFiles} />
-          </div>
-        )}
+      {/* Header with action buttons */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border/50 bg-background/30">
+        <div className="flex items-center gap-1.5 flex-1 min-w-0">
+          <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-400 font-medium shrink-0">
+            E2B
+          </span>
+          <span className="text-[10px] text-muted-foreground truncate">
+            Cloud Sandbox
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          {/* Upload button */}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading || !agentId}
+            className="h-5 px-1.5"
+            title="Upload files"
+          >
+            {uploading ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <Upload className="size-3" />
+            )}
+          </Button>
+          {/* Refresh button */}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={refreshing || !agentId}
+            className="h-5 px-1.5"
+            title="Refresh file list"
+          >
+            <RefreshCw className={cn("size-3", refreshing && "animate-spin")} />
+          </Button>
+        </div>
       </div>
 
-      {/* Workspace browser dialog */}
-      <WorkspaceBrowser
-        open={browserOpen}
-        onOpenChange={setBrowserOpen}
-        onSelect={handleBrowserSelect}
-        initialPath={workspacePath || undefined}
-      />
-    </>
+      {/* Backup status indicator */}
+      {backupStatus?.backup && !sandboxError && (
+        <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/30 bg-background/20 text-[10px]">
+          <div className="flex items-center gap-1.5 text-muted-foreground">
+            <HardDrive className="size-3" />
+            <span>
+              Backed up: {backupStatus.backup.fileCount} files ({formatSize(backupStatus.backup.totalSize)})
+            </span>
+            <span className="text-muted-foreground/70">
+              · {formatRelativeTime(backupStatus.backup.updatedAt)}
+            </span>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleManualBackup}
+            className="h-4 px-1.5 text-[9px] text-muted-foreground hover:text-foreground"
+            title="Backup now"
+          >
+            <HardDrive className="size-2.5" />
+            <span className="ml-1">Backup</span>
+          </Button>
+        </div>
+      )}
+
+      {/* File tree or empty state */}
+      {workspaceFiles.length === 0 ? (
+        <div className="flex flex-col items-center justify-center text-center text-sm text-muted-foreground py-8 px-4 flex-1">
+          <FolderTree className="size-8 mb-2 opacity-50" />
+          <span>No sandbox files</span>
+          <span className="text-xs mt-1">
+            Files created by the agent will appear here
+          </span>
+        </div>
+      ) : (
+        <div className="py-1 overflow-auto flex-1">
+          <FileTree files={workspaceFiles} onDelete={handleDelete} onDownload={handleDownload} />
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1067,7 +964,15 @@ function buildFileTree(files: FileInfo[]): TreeNode[] {
   return root
 }
 
-function FileTree({ files }: { files: FileInfo[] }): React.JSX.Element {
+function FileTree({
+  files,
+  onDelete,
+  onDownload
+}: {
+  files: FileInfo[]
+  onDelete?: (filePath: string) => Promise<void>
+  onDownload?: (filePath: string, fileName: string) => Promise<void>
+}): React.JSX.Element {
   const tree = useMemo(() => buildFileTree(files), [files])
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     // Start with all directories expanded
@@ -1099,6 +1004,8 @@ function FileTree({ files }: { files: FileInfo[] }): React.JSX.Element {
           depth={0}
           expanded={expanded}
           onToggle={toggleExpand}
+          onDelete={onDelete}
+          onDownload={onDownload}
         />
       ))}
     </div>
@@ -1109,12 +1016,16 @@ function FileTreeNode({
   node,
   depth,
   expanded,
-  onToggle
+  onToggle,
+  onDelete,
+  onDownload
 }: {
   node: TreeNode
   depth: number
   expanded: Set<string>
   onToggle: (path: string) => void
+  onDelete?: (filePath: string) => Promise<void>
+  onDownload?: (filePath: string, fileName: string) => Promise<void>
 }): React.JSX.Element {
   const { currentThreadId } = useAppStore()
   const threadState = useThreadState(currentThreadId)
@@ -1132,12 +1043,26 @@ function FileTreeNode({
     }
   }
 
+  const handleDownloadClick = (e: React.MouseEvent): void => {
+    e.stopPropagation()
+    if (onDownload) {
+      onDownload(node.path, node.name)
+    }
+  }
+
+  const handleDeleteClick = (e: React.MouseEvent): void => {
+    e.stopPropagation()
+    if (onDelete) {
+      onDelete(node.path)
+    }
+  }
+
   return (
     <>
       <div
         onClick={handleClick}
         className={cn(
-          'flex items-center gap-1.5 py-1 pr-3 text-xs hover:bg-background-interactive cursor-pointer'
+          'group flex items-center gap-1.5 py-1 pr-3 text-xs hover:bg-background-interactive cursor-pointer'
         )}
         style={{ paddingLeft }}
       >
@@ -1161,11 +1086,35 @@ function FileTreeNode({
         {/* Name */}
         <span className="truncate flex-1">{node.name}</span>
 
-        {/* Size for files */}
+        {/* Size for files (hidden when hovering to show action icons) */}
         {!node.is_dir && node.size !== undefined && (
-          <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
+          <span className="text-[10px] text-muted-foreground tabular-nums shrink-0 group-hover:hidden">
             {formatSize(node.size)}
           </span>
+        )}
+
+        {/* Action icons for files (visible on hover) */}
+        {!node.is_dir && (
+          <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
+            {onDownload && (
+              <button
+                onClick={handleDownloadClick}
+                className="p-0.5 rounded hover:bg-background-elevated text-muted-foreground hover:text-foreground"
+                title="Download"
+              >
+                <Download className="size-3" />
+              </button>
+            )}
+            {onDelete && (
+              <button
+                onClick={handleDeleteClick}
+                className="p-0.5 rounded hover:bg-status-critical/20 text-muted-foreground hover:text-status-critical"
+                title="Delete"
+              >
+                <Trash2 className="size-3" />
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -1179,6 +1128,8 @@ function FileTreeNode({
             depth={depth + 1}
             expanded={expanded}
             onToggle={onToggle}
+            onDelete={onDelete}
+            onDownload={onDownload}
           />
         ))}
     </>

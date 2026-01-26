@@ -6,9 +6,6 @@ import { useAppStore } from '@/lib/store'
 import { useCurrentThread, useThreadStream } from '@/lib/thread-context'
 import { MessageBubble } from './MessageBubble'
 import { ModelSwitcher } from './ModelSwitcher'
-import { Folder } from 'lucide-react'
-import { WorkspacePicker } from './WorkspacePicker'
-import { WorkspaceBrowser } from '@/components/workspace/WorkspaceBrowser'
 import { ChatTodos } from './ChatTodos'
 import { ContextUsageIndicator } from './ContextUsageIndicator'
 import type { Message } from '@/types'
@@ -32,7 +29,6 @@ interface ChatContainerProps {
 
 export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Element {
   const [input, setInput] = useState('')
-  const [workspaceBrowserOpen, setWorkspaceBrowserOpen] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
@@ -45,12 +41,10 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     pendingApproval,
     todos,
     error: threadError,
-    workspacePath,
     tokenUsage,
     currentModel,
     setTodos,
     setWorkspaceFiles,
-    setWorkspacePath,
     setPendingApproval,
     appendMessage,
     setError,
@@ -221,11 +215,6 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     e.preventDefault()
     if (!input.trim() || isLoading || !stream) return
 
-    if (!workspacePath) {
-      setError('Please select a workspace folder before sending messages.')
-      return
-    }
-
     if (threadError) {
       clearError()
     }
@@ -293,28 +282,7 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     await stream?.stop()
   }
 
-  const handleOpenWorkspaceBrowser = (): void => {
-    setWorkspaceBrowserOpen(true)
-  }
-
-  const handleWorkspaceSelected = async (selectedPath: string): Promise<void> => {
-    try {
-      const result = await window.api.workspace.set(threadId, selectedPath)
-      if (result) {
-        setWorkspacePath(result)
-        const filesResult = await window.api.workspace.loadFromDisk(threadId)
-        if (filesResult.success && filesResult.files) {
-          setWorkspaceFiles(filesResult.files)
-        }
-      }
-      setWorkspaceBrowserOpen(false)
-    } catch (e) {
-      console.error('[ChatContainer] Select workspace error:', e)
-    }
-  }
-
   return (
-    <>
     <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
       {/* Messages */}
       <ScrollArea className="flex-1 min-h-0" ref={scrollRef}>
@@ -323,26 +291,7 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
             {displayMessages.length === 0 && !isLoading && (
               <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
                 <div className="text-section-header mb-2">NEW THREAD</div>
-                {workspacePath ? (
-                  <div className="text-sm">Start a conversation with the agent</div>
-                ) : (
-                  <div className="text-sm text-center space-y-3">
-                    <div>
-                      <span className="text-amber-500">Select a workspace folder</span>
-                      <span className="block text-xs mt-1 opacity-75">
-                        The agent needs a workspace to create and modify files
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      className="inline-flex items-center justify-center rounded-md border border-border bg-background px-2 h-7 text-xs gap-1.5 text-amber-500 hover:bg-accent/50 transition-color duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                      onClick={handleOpenWorkspaceBrowser}
-                    >
-                      <Folder className="size-3.5" />
-                      <span className="max-w-[120px] truncate">Select workspace</span>
-                    </button>
-                  </div>
-                )}
+                <div className="text-sm">Start a conversation with the agent</div>
               </div>
             )}
 
@@ -424,8 +373,6 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ModelSwitcher threadId={threadId} />
-                <div className="w-px h-4 bg-border" />
-                <WorkspacePicker threadId={threadId} />
               </div>
               {tokenUsage && (
                 <ContextUsageIndicator tokenUsage={tokenUsage} modelId={currentModel} />
@@ -434,15 +381,6 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
           </div>
         </form>
       </div>
-
     </div>
-
-      <WorkspaceBrowser
-        open={workspaceBrowserOpen}
-        onOpenChange={setWorkspaceBrowserOpen}
-        onSelect={handleWorkspaceSelected}
-        initialPath={workspacePath || undefined}
-      />
-    </>
   )
 }

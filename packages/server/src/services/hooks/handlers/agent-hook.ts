@@ -1,31 +1,52 @@
 /**
- * WhatsApp Agent Handler
- * Handles incoming WhatsApp messages and triggers agent responses
+ * Agent Hook Handler
+ * Processes incoming messages and triggers AI agent responses
  */
 
 import { v4 as uuidv4 } from 'uuid'
+import { HookHandler, HookEvent, HookResult, hookManager } from '../hook-manager.js'
 import {
   getWhatsAppAgentConfig,
   getThreadForJid,
   updateThreadMapping,
   updateThreadMappingActivity,
   isThreadMappingActive
-} from './config-store.js'
-import { socketManager } from './socket-manager.js'
-import { getMessageStore } from './message-store.js'
-import { createThread, updateThread, getThread } from '../../db/index.js'
+} from '../../apps/whatsapp/config-store.js'
+import { createThread, updateThread } from '../../db/index.js'
 import { createAgentRuntime } from '../../agent/runtime.js'
 import { broadcastToUser } from '../../../websocket/index.js'
-import type { MessageInfo, ContactInfo } from './types.js'
+import { getMessageStore } from '../../apps/whatsapp/message-store.js'
 
 // Queue of messages being processed per JID to prevent concurrent processing
 const processingQueues = new Map<string, Promise<void>>()
 
+interface MessagePayload {
+  message: {
+    id: string
+    from: string
+    to: string
+    fromMe: boolean
+    timestamp: number
+    type: string
+    content: string
+    isGroup: boolean
+    senderName?: string
+  }
+  jid: string
+  contactName?: string
+}
+
+interface ContactInfo {
+  jid: string
+  name?: string
+  pushName?: string
+}
+
 /**
- * Format an incoming WhatsApp message for the agent.
+ * Format an incoming message for the agent.
  * Includes sender info and message content.
  */
-function formatMessageForAgent(message: MessageInfo, contact: ContactInfo | null): string {
+function formatMessageForAgent(message: MessagePayload['message'], contact: ContactInfo | null): string {
   const senderName = contact?.name || contact?.pushName || message.senderName || message.from.split('@')[0]
   const phoneNumber = message.from.split('@')[0]
 
@@ -61,7 +82,7 @@ function formatMessageForAgent(message: MessageInfo, contact: ContactInfo | null
 }
 
 /**
- * Get or create a thread for a WhatsApp JID.
+ * Get or create a thread for a source-specific JID.
  * Uses timeout logic to determine if an existing thread should be reused.
  */
 async function getOrCreateThreadForJid(
@@ -78,10 +99,10 @@ async function getOrCreateThreadForJid(
     if (isThreadMappingActive(existingMapping, timeoutMinutes)) {
       // Update last activity and reuse thread
       updateThreadMappingActivity(userId, jid)
-      console.log(`[WhatsApp Agent] Reusing thread ${existingMapping.thread_id} for JID ${jid}`)
+      console.log(`[AgentHook] Reusing thread ${existingMapping.thread_id} for JID ${jid}`)
       return existingMapping.thread_id
     } else {
-      console.log(`[WhatsApp Agent] Thread ${existingMapping.thread_id} expired for JID ${jid}, creating new thread`)
+      console.log(`[AgentHook] Thread ${existingMapping.thread_id} expired for JID ${jid}, creating new thread`)
     }
   }
 
@@ -102,6 +123,20 @@ async function getOrCreateThreadForJid(
   // Create or update thread mapping
   updateThreadMapping(userId, jid, threadId)
 
+  // Emit thread:created event
+  await hookManager.emit({
+    type: 'thread:created',
+    userId,
+    source: 'whatsapp',
+    payload: {
+      threadId,
+      agentId,
+      jid,
+      contactName,
+      title
+    }
+  })
+
   // Broadcast thread:created event to the user's connected clients
   broadcastToUser(userId, 'thread:created', {
     thread_id: threadId,
@@ -117,7 +152,7 @@ async function getOrCreateThreadForJid(
     whatsapp_contact_name: contactName
   })
 
-  console.log(`[WhatsApp Agent] Created new thread ${threadId} for JID ${jid}`)
+  console.log(`[AgentHook] Created new thread ${threadId} for JID ${jid}`)
   return threadId
 }
 
@@ -127,8 +162,6 @@ async function getOrCreateThreadForJid(
 function extractResponseFromAgentOutput(output: unknown): string | null {
   if (!output || typeof output !== 'object') return null
 
-  // Handle different output formats from the agent stream
-  // The agent typically returns messages in the format: { messages: [...] }
   const outputObj = output as Record<string, unknown>
 
   // Check for messages array
@@ -172,13 +205,15 @@ function extractResponseFromAgentOutput(output: unknown): string | null {
  */
 async function invokeAgentServerSide(
   threadId: string,
-  message: string
+  message: string,
+  workspacePath: string
 ): Promise<string | null> {
   try {
-    console.log(`[WhatsApp Agent] Invoking agent for thread ${threadId}`)
+    console.log(`[AgentHook] Invoking agent for thread ${threadId}`)
 
     const agent = await createAgentRuntime({
-      threadId
+      threadId,
+      workspacePath
     })
 
     // Stream the agent and collect output
@@ -195,43 +230,55 @@ async function invokeAgentServerSide(
 
     for await (const output of stream) {
       lastOutput = output
-      // Log for debugging
-      // console.log('[WhatsApp Agent] Stream output:', JSON.stringify(output, null, 2))
     }
 
     // Extract response from the last output
     const response = extractResponseFromAgentOutput(lastOutput)
-    console.log(`[WhatsApp Agent] Agent response extracted: ${response ? response.substring(0, 100) + '...' : 'null'}`)
+    console.log(`[AgentHook] Agent response extracted: ${response ? response.substring(0, 100) + '...' : 'null'}`)
 
     return response
   } catch (error) {
-    console.error(`[WhatsApp Agent] Error invoking agent:`, error)
+    console.error(`[AgentHook] Error invoking agent:`, error)
     return null
   }
 }
 
 /**
- * Send a typing indicator to WhatsApp.
+ * Get source-specific agent configuration.
+ * Currently only supports WhatsApp, but can be extended for other sources.
  */
-async function sendTypingIndicator(userId: string, jid: string, isTyping: boolean): Promise<void> {
-  // TODO: Implement typing indicator via Baileys
-  // This would require adding a method to socketManager
-  // For now, this is a placeholder
+function getSourceAgentConfig(userId: string, source: string) {
+  if (source === 'whatsapp') {
+    return getWhatsAppAgentConfig(userId)
+  }
+  // Future: Add support for other sources like Telegram, Slack, etc.
+  return null
 }
 
 /**
  * Process a single incoming message.
- * This is the internal function that does the actual work.
  */
-async function processMessage(userId: string, message: MessageInfo): Promise<void> {
-  const config = getWhatsAppAgentConfig(userId)
+async function processMessage(
+  userId: string,
+  source: string,
+  payload: MessagePayload
+): Promise<void> {
+  const config = getSourceAgentConfig(userId, source)
 
   // Check if auto-agent is enabled
   if (!config || !config.enabled || !config.agent_id) {
-    console.log(`[WhatsApp Agent] Auto-agent not enabled for user ${userId}`)
+    console.log(`[AgentHook] Auto-agent not enabled for user ${userId}`)
     return
   }
 
+  // Get workspace path (required for agent)
+  const workspacePath = config.workspace_path
+  if (!workspacePath) {
+    console.log(`[AgentHook] No workspace path configured for user ${userId}`)
+    return
+  }
+
+  const message = payload.message
   const jid = message.isGroup ? message.to : message.from
   const timeoutMinutes = config.thread_timeout_minutes || 30
 
@@ -239,11 +286,21 @@ async function processMessage(userId: string, message: MessageInfo): Promise<voi
   const messageStore = getMessageStore()
   const contacts = messageStore.getContacts(userId)
   const contact = contacts.find(c => c.jid === message.from) || null
-  const contactName = contact?.name || contact?.pushName || message.senderName || message.from.split('@')[0]
+  const contactName = payload.contactName || contact?.name || contact?.pushName || message.senderName || message.from.split('@')[0]
 
   try {
-    // Send typing indicator
-    await sendTypingIndicator(userId, jid, true)
+    // Emit agent:invoked event
+    await hookManager.emit({
+      type: 'agent:invoked',
+      userId,
+      source,
+      payload: {
+        jid,
+        contactName,
+        messageContent: message.content,
+        agentId: config.agent_id
+      }
+    })
 
     // Get or create thread
     const threadId = await getOrCreateThreadForJid(
@@ -258,69 +315,105 @@ async function processMessage(userId: string, message: MessageInfo): Promise<voi
     const formattedMessage = formatMessageForAgent(message, contact)
 
     // Invoke agent
-    const response = await invokeAgentServerSide(threadId, formattedMessage)
+    const response = await invokeAgentServerSide(threadId, formattedMessage, workspacePath)
 
-    // Stop typing indicator
-    await sendTypingIndicator(userId, jid, false)
-
-    // Send response via WhatsApp if we got one
+    // Emit response or error event
     if (response) {
-      const result = await socketManager.sendMessage(userId, jid, response)
-      if (result.success) {
-        console.log(`[WhatsApp Agent] Sent response to ${jid}: ${response.substring(0, 50)}...`)
-      } else {
-        console.error(`[WhatsApp Agent] Failed to send response: ${result.error}`)
-      }
+      // Emit agent:response event for sender handler to pick up
+      await hookManager.emit({
+        type: 'agent:response',
+        userId,
+        source,
+        payload: {
+          threadId,
+          jid,
+          response,
+          agentId: config.agent_id
+        }
+      })
     } else {
-      console.log(`[WhatsApp Agent] No response generated for message from ${jid}`)
+      console.log(`[AgentHook] No response generated for message from ${jid}`)
     }
   } catch (error) {
-    // Stop typing indicator on error
-    await sendTypingIndicator(userId, jid, false)
-    console.error(`[WhatsApp Agent] Error processing message:`, error)
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    console.error(`[AgentHook] Error processing message:`, error)
+
+    // Emit agent:error event
+    await hookManager.emit({
+      type: 'agent:error',
+      userId,
+      source,
+      payload: {
+        jid,
+        error: errorMessage,
+        agentId: config.agent_id
+      }
+    })
   }
 }
 
 /**
- * Handle an incoming WhatsApp message.
- * This is the main entry point called by the socket manager.
- *
- * Messages are queued per JID to prevent concurrent processing of messages
- * from the same contact/group.
+ * Agent Hook Handler
+ * Listens for message:received events and triggers agent processing
  */
-export async function handleIncomingMessage(userId: string, message: MessageInfo): Promise<void> {
-  // Skip messages from self
-  if (message.fromMe) {
-    return
-  }
+export const agentHookHandler: HookHandler = {
+  id: 'builtin:agent',
+  name: 'AI Agent Auto-Response',
+  eventTypes: ['message:received'],
+  enabled: true,
+  priority: 100,  // Run early in the chain
+  handler: async (event: HookEvent): Promise<HookResult> => {
+    const { userId, source, payload } = event
+    const messagePayload = payload as MessagePayload
 
-  const jid = message.isGroup ? message.to : message.from
-  const queueKey = `${userId}:${jid}`
-
-  // Get the current queue for this JID, or create empty resolved promise
-  const currentQueue = processingQueues.get(queueKey) || Promise.resolve()
-
-  // Chain this message processing after the current queue
-  const newQueue = currentQueue.then(() => processMessage(userId, message)).catch(error => {
-    console.error(`[WhatsApp Agent] Queue processing error:`, error)
-  })
-
-  // Update the queue
-  processingQueues.set(queueKey, newQueue)
-
-  // Clean up the queue entry after processing is complete
-  newQueue.finally(() => {
-    // Only delete if this is still the current queue
-    if (processingQueues.get(queueKey) === newQueue) {
-      processingQueues.delete(queueKey)
+    // Skip if no message payload
+    if (!messagePayload?.message) {
+      return { success: true }
     }
-  })
+
+    // Skip messages from self
+    if (messagePayload.message.fromMe) {
+      return { success: true }
+    }
+
+    // Check if auto-agent is enabled before processing
+    const config = getSourceAgentConfig(userId, source)
+    if (!config?.enabled || !config.agent_id) {
+      return { success: true }  // Not enabled, skip
+    }
+
+    const message = messagePayload.message
+    const jid = message.isGroup ? message.to : message.from
+    const queueKey = `${userId}:${jid}`
+
+    // Get the current queue for this JID, or create empty resolved promise
+    const currentQueue = processingQueues.get(queueKey) || Promise.resolve()
+
+    // Chain this message processing after the current queue
+    const newQueue = currentQueue.then(() => processMessage(userId, source, messagePayload)).catch(error => {
+      console.error(`[AgentHook] Queue processing error:`, error)
+    })
+
+    // Update the queue
+    processingQueues.set(queueKey, newQueue)
+
+    // Clean up the queue entry after processing is complete
+    newQueue.finally(() => {
+      // Only delete if this is still the current queue
+      if (processingQueues.get(queueKey) === newQueue) {
+        processingQueues.delete(queueKey)
+      }
+    })
+
+    // Don't await - let processing happen asynchronously
+    return { success: true }
+  }
 }
 
 /**
- * Check if auto-agent is enabled for a user.
+ * Check if auto-agent is enabled for a user and source.
  */
-export function isAutoAgentEnabled(userId: string): boolean {
-  const config = getWhatsAppAgentConfig(userId)
-  return !!(config?.enabled && config.agent_id)
+export function isAutoAgentEnabled(userId: string, source: string = 'whatsapp'): boolean {
+  const config = getSourceAgentConfig(userId, source)
+  return !!(config?.enabled && config.agent_id && config.workspace_path)
 }

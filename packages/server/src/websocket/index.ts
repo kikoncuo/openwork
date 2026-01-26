@@ -1,7 +1,6 @@
 import { Server, Socket } from 'socket.io'
 import { registerAgentStreamHandlers } from './agent-stream.js'
 import { registerWhatsAppHandlers } from './whatsapp.js'
-import { registerWorkspaceHandlers } from './workspace.js'
 import { verifySocketAuth } from '../middleware/auth.js'
 
 // Extend Socket type to include user info
@@ -83,7 +82,6 @@ export function registerWebSocketHandlers(io: Server): void {
     // Register domain-specific handlers
     registerAgentStreamHandlers(socket)
     registerWhatsAppHandlers(socket)
-    registerWorkspaceHandlers(socket)
 
     socket.on('disconnect', (reason) => {
       console.log(`[WebSocket] Client disconnected: ${socket.id}, reason: ${reason}`)

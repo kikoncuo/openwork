@@ -9,6 +9,8 @@ import toolsRouter from './tools.js'
 import promptRouter from './prompt.js'
 import insightsRouter from './insights.js'
 import whatsappRouter from './whatsapp.js'
+import hooksRouter from './hooks.js'
+import connectionsRouter from './connections.js'
 
 export function registerRoutes(app: Express): void {
   // Health check
@@ -27,6 +29,8 @@ export function registerRoutes(app: Express): void {
   app.use('/api/prompt', promptRouter)
   app.use('/api/insights', insightsRouter)
   app.use('/api/whatsapp', whatsappRouter)
+  app.use('/api/hooks', hooksRouter)
+  app.use('/api/connections', connectionsRouter)
 
   // Error handler
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {

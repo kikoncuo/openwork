@@ -42,7 +42,6 @@ export const windowApi = {
       color?: string
       icon?: string
       model_default?: string
-      default_workspace_path?: string | null
     }): Promise<Agent> => api.post('/agents', input),
     update: (
       agentId: string,
@@ -51,7 +50,6 @@ export const windowApi = {
         color?: string
         icon?: string
         model_default?: string
-        default_workspace_path?: string | null
       }
     ): Promise<Agent | null> => api.patch(`/agents/${agentId}`, updates),
     delete: (agentId: string): Promise<{ success: boolean; error?: string; reassignedThreads?: number }> =>
@@ -79,74 +77,6 @@ export const windowApi = {
   },
 
   workspace: {
-    get: (threadId?: string): Promise<string | null> =>
-      api.get<{ workspacePath: string | null }>(`/workspace${threadId ? `?threadId=${threadId}` : ''}`).then(
-        (r) => r.workspacePath
-      ),
-    set: (threadId: string, path: string): Promise<string | null> =>
-      api.put<{ workspacePath: string | null }>('/workspace', { threadId, path }).then((r) => r.workspacePath),
-    // select() - Uses browser's directory picker API
-    select: async (_threadId?: string): Promise<string | null> => {
-      // Use File System Access API where supported
-      if ('showDirectoryPicker' in window) {
-        try {
-          const handle = await (window as unknown as { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker()
-          return handle.name
-        } catch (e) {
-          // User cancelled or API not supported
-          if ((e as Error).name !== 'AbortError') {
-            console.error('[Workspace] Directory picker error:', e)
-          }
-          return null
-        }
-      }
-
-      // Fallback: prompt user for path input
-      // In a real web app, you might want to use a more sophisticated approach
-      const path = prompt('Enter workspace folder path:')
-      return path || null
-    },
-    loadFromDisk: (threadId: string): Promise<{
-      success: boolean
-      files: Array<{ path: string; is_dir: boolean; size?: number; modified_at?: string }>
-      workspacePath?: string
-      error?: string
-    }> => api.get(`/workspace/files?threadId=${threadId}`),
-    readFile: (
-      threadId: string,
-      filePath: string
-    ): Promise<{ success: boolean; content?: string; size?: number; modified_at?: string; error?: string }> =>
-      api.get(`/workspace/file?threadId=${threadId}&path=${encodeURIComponent(filePath)}`),
-    readBinaryFile: (
-      threadId: string,
-      filePath: string
-    ): Promise<{ success: boolean; content?: string; size?: number; modified_at?: string; error?: string }> =>
-      api.get(`/workspace/file?threadId=${threadId}&path=${encodeURIComponent(filePath)}&binary=true`),
-    onFilesChanged: (threadId: string, callback: (data: { threadId: string; workspacePath: string }) => void | Promise<void>): CleanupFn => {
-      ws.emit('workspace:subscribe', { threadId })
-      return ws.on(`workspace:files-changed:${threadId}`, callback as (data: unknown) => void)
-    },
-    // Server-side folder browsing
-    browse: (browsePath?: string): Promise<{
-      currentPath: string
-      parentPath: string | null
-      entries: Array<{
-        name: string
-        path: string
-        isDirectory: boolean
-        size?: number
-        modifiedAt?: string
-      }>
-    }> => api.get(`/workspace/browse${browsePath ? `?path=${encodeURIComponent(browsePath)}` : ''}`),
-    validate: (pathToValidate: string): Promise<{
-      valid: boolean
-      path: string
-      writable?: boolean
-      error?: string
-    }> => api.post('/workspace/validate', { path: pathToValidate }),
-    getSuggestions: (): Promise<Array<{ path: string; label: string }>> =>
-      api.get('/workspace/suggestions'),
-
     // E2B Sandbox methods
     sandboxStatus: (threadId: string): Promise<{
       success: boolean
@@ -155,13 +85,19 @@ export const windowApi = {
       workspacePath?: string
     }> => api.get(`/workspace/sandbox/status?threadId=${threadId}`),
 
-    sandboxFiles: (threadId: string, path?: string): Promise<{
+    sandboxFiles: (options: { threadId?: string; agentId?: string; path?: string }): Promise<{
       success: boolean
       files: Array<{ name: string; path: string; is_dir: boolean }>
       currentPath: string
       workspacePath: string
       error?: string
-    }> => api.get(`/workspace/sandbox/files?threadId=${threadId}${path ? `&path=${encodeURIComponent(path)}` : ''}`),
+    }> => {
+      const params = new URLSearchParams()
+      if (options.threadId) params.set('threadId', options.threadId)
+      if (options.agentId) params.set('agentId', options.agentId)
+      if (options.path) params.set('path', options.path)
+      return api.get(`/workspace/sandbox/files?${params}`)
+    },
 
     sandboxReadFile: (threadId: string, filePath: string): Promise<{
       success: boolean
@@ -176,26 +112,8 @@ export const windowApi = {
       error?: string
     }> => api.post('/workspace/sandbox/file', { threadId, path: filePath, content }),
 
-    sandboxUploadFolder: (threadId: string, localPath: string): Promise<{
-      success: boolean
-      filesUploaded?: number
-      errors?: number
-      localPath?: string
-      sandboxPath?: string
-      error?: string
-    }> => api.post('/workspace/sandbox/upload-folder', { threadId, localPath }),
-
-    sandboxSyncToLocal: (threadId: string): Promise<{
-      success: boolean
-      filesDownloaded?: number
-      errors?: number
-      localPath?: string
-      sandboxPath?: string
-      error?: string
-    }> => api.post('/workspace/sandbox/sync-to-local', { threadId }),
-
     // Sandbox Backup methods
-    sandboxBackupStatus: (threadId: string): Promise<{
+    sandboxBackupStatus: (options: { threadId?: string; agentId?: string }): Promise<{
       success: boolean
       schedulerActive: boolean
       backup: {
@@ -203,7 +121,12 @@ export const windowApi = {
         totalSize: number
         updatedAt: number
       } | null
-    }> => api.get(`/workspace/sandbox/backup/status?threadId=${threadId}`),
+    }> => {
+      const params = new URLSearchParams()
+      if (options.threadId) params.set('threadId', options.threadId)
+      if (options.agentId) params.set('agentId', options.agentId)
+      return api.get(`/workspace/sandbox/backup/status?${params}`)
+    },
 
     sandboxBackup: (threadId: string): Promise<{
       success: boolean
@@ -226,6 +149,32 @@ export const windowApi = {
       success: boolean
       error?: string
     }> => api.delete(`/workspace/sandbox/backup?threadId=${threadId}`),
+
+    // Backup-first file operations (Phase 3)
+    backupReadFile: (agentId: string, filePath: string): Promise<{
+      success: boolean
+      content?: string
+      path?: string
+      error?: string
+    }> => api.get(`/workspace/backup/file?agentId=${agentId}&path=${encodeURIComponent(filePath)}`),
+
+    backupWriteFile: (agentId: string, filePath: string, content: string): Promise<{
+      success: boolean
+      path?: string
+      error?: string
+    }> => api.post('/workspace/backup/file', { agentId, path: filePath, content }),
+
+    backupDeleteFile: (agentId: string, filePath: string): Promise<{
+      success: boolean
+      deleted?: boolean
+      error?: string
+    }> => api.delete(`/workspace/backup/file?agentId=${agentId}&path=${encodeURIComponent(filePath)}`),
+
+    backupListFiles: (agentId: string): Promise<{
+      success: boolean
+      files: Array<{ path: string; size: number; is_dir: boolean }>
+      error?: string
+    }> => api.get(`/workspace/backup/files?agentId=${agentId}`),
   },
 
   agent: {
@@ -340,18 +289,15 @@ export const windowApi = {
       enabled: boolean
       agent_id: string | null
       thread_timeout_minutes: number
-      workspace_path: string | null
     }> => api.get('/whatsapp/agent/config'),
     updateAgentConfig: (updates: {
       enabled?: boolean
       agent_id?: string | null
       thread_timeout_minutes?: number
-      workspace_path?: string | null
     }): Promise<{
       enabled: boolean
       agent_id: string | null
       thread_timeout_minutes: number
-      workspace_path: string | null
     }> => api.patch('/whatsapp/agent/config', updates),
   },
 }

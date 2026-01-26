@@ -101,7 +101,6 @@ export interface CreateAgentInput {
   color?: string
   icon?: AgentIcon
   model_default?: string
-  default_workspace_path?: string | null
   is_default?: boolean
   user_id?: string
 }
@@ -117,7 +116,6 @@ export function createAgent(input: CreateAgentInput): Agent {
     color: input.color || '#8B5CF6',
     icon: input.icon || 'bot',
     model_default: input.model_default || 'claude-sonnet-4-5-20250929',
-    default_workspace_path: input.default_workspace_path || null,
     is_default: input.is_default ? 1 : 0,
     user_id: input.user_id || null,
     e2b_sandbox_id: null,
@@ -126,9 +124,9 @@ export function createAgent(input: CreateAgentInput): Agent {
   }
 
   db.run(
-    `INSERT INTO agents (agent_id, name, color, icon, model_default, default_workspace_path, is_default, user_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [agent.agent_id, agent.name, agent.color, agent.icon, agent.model_default, agent.default_workspace_path, agent.is_default, agent.user_id, agent.created_at, agent.updated_at]
+    `INSERT INTO agents (agent_id, name, color, icon, model_default, is_default, user_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [agent.agent_id, agent.name, agent.color, agent.icon, agent.model_default, agent.is_default, agent.user_id, agent.created_at, agent.updated_at]
   )
 
   // Create empty config for the agent
@@ -147,7 +145,6 @@ export interface UpdateAgentInput {
   color?: string
   icon?: AgentIcon
   model_default?: string
-  default_workspace_path?: string | null
 }
 
 export function updateAgent(agentId: string, updates: UpdateAgentInput): Agent | null {
@@ -175,10 +172,6 @@ export function updateAgent(agentId: string, updates: UpdateAgentInput): Agent |
   if (updates.model_default !== undefined) {
     setClauses.push('model_default = ?')
     values.push(updates.model_default)
-  }
-  if (updates.default_workspace_path !== undefined) {
-    setClauses.push('default_workspace_path = ?')
-    values.push(updates.default_workspace_path)
   }
 
   values.push(agentId)

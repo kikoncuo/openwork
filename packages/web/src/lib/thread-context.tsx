@@ -38,7 +38,6 @@ export interface ThreadState {
   messages: Message[]
   todos: Todo[]
   workspaceFiles: FileInfo[]
-  workspacePath: string | null
   subagents: Subagent[]
   pendingApproval: HITLRequest | null
   error: string | null
@@ -65,7 +64,6 @@ export interface ThreadActions {
   setMessages: (messages: Message[]) => void
   setTodos: (todos: Todo[]) => void
   setWorkspaceFiles: (files: FileInfo[] | ((prev: FileInfo[]) => FileInfo[])) => void
-  setWorkspacePath: (path: string | null) => void
   setSubagents: (subagents: Subagent[]) => void
   setPendingApproval: (request: HITLRequest | null) => void
   setError: (error: string | null) => void
@@ -93,7 +91,6 @@ const createDefaultThreadState = (): ThreadState => ({
   messages: [],
   todos: [],
   workspaceFiles: [],
-  workspacePath: null,
   subagents: [],
   pendingApproval: null,
   error: null,
@@ -340,9 +337,6 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
               return { workspaceFiles: Array.from(fileMap.values()) }
             })
           }
-          if (data.path) {
-            updateThreadState(threadId, () => ({ workspacePath: data.path }))
-          }
           break
         case 'subagents':
           if (Array.isArray(data.subagents)) {
@@ -424,9 +418,6 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
             workspaceFiles: typeof files === 'function' ? files(state.workspaceFiles) : files
           }))
         },
-        setWorkspacePath: (path: string | null) => {
-          updateThreadState(threadId, () => ({ workspacePath: path }))
-        },
         setSubagents: (subagents: Subagent[]) => {
           updateThreadState(threadId, () => ({ subagents }))
         },
@@ -483,20 +474,6 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
   const loadThreadHistory = useCallback(
     async (threadId: string) => {
       const actions = getThreadActions(threadId)
-
-      // Load workspace path
-      try {
-        const path = await window.api.workspace.get(threadId)
-        if (path) {
-          actions.setWorkspacePath(path)
-          const diskResult = await window.api.workspace.loadFromDisk(threadId)
-          if (diskResult.success) {
-            actions.setWorkspaceFiles(diskResult.files)
-          }
-        }
-      } catch (error) {
-        console.error('[ThreadContext] Failed to load workspace path:', error)
-      }
 
       // Load thread state (messages, todos) from checkpointer
       try {

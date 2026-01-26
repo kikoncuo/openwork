@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Loader2, AlertCircle, FileCode } from 'lucide-react'
 import { useCurrentThread } from '@/lib/thread-context'
+import { useAppStore } from '@/lib/store'
 import { getFileType, isBinaryFile } from '@/lib/file-types'
 import { CodeViewer } from './CodeViewer'
 import { ImageViewer } from './ImageViewer'
@@ -15,10 +16,10 @@ interface FileViewerProps {
 
 export function FileViewer({ filePath, threadId }: FileViewerProps) {
   const { fileContents, setFileContents } = useCurrentThread(threadId)
+  const { activeAgentId } = useAppStore()
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [binaryContent, setBinaryContent] = useState<string | null>(null)
-  const [fileSize, setFileSize] = useState<number | undefined>()
   const [sandboxEnabled, setSandboxEnabled] = useState(false)
 
   // Check sandbox status on mount
@@ -47,10 +48,10 @@ export function FileViewer({ filePath, threadId }: FileViewerProps) {
   useEffect(() => {
     setError(null)
     setBinaryContent(null)
-    setFileSize(undefined)
   }, [filePath])
 
   // Load file content (text or binary depending on file type)
+  // Uses backup-first approach: try backup first, then fallback to sandbox
   useEffect(() => {
     async function loadFile() {
       // Skip if already loaded
@@ -62,40 +63,43 @@ export function FileViewer({ filePath, threadId }: FileViewerProps) {
       setError(null)
 
       try {
-        if (sandboxEnabled) {
-          // Read from E2B sandbox
-          if (isBinary) {
-            // Binary files not yet supported from E2B sandbox
-            setError('Binary file preview not supported for E2B sandbox files')
-          } else {
-            const result = await window.api.workspace.sandboxReadFile(threadId, filePath)
-            if (result.success && result.content !== undefined) {
-              setFileContents(filePath, result.content)
-            } else {
-              setError(result.error || 'Failed to read file from sandbox')
+        // Binary files - not supported in E2B/backup mode
+        if (isBinary) {
+          setError('Binary file preview not yet supported')
+          return
+        }
+
+        // Text files - use backup-first approach
+        let loaded = false
+
+        // Step 1: Try backup first (always available, no sandbox needed)
+        if (activeAgentId) {
+          try {
+            const backupResult = await window.api.workspace.backupReadFile(activeAgentId, filePath)
+            if (backupResult.success && backupResult.content !== undefined) {
+              setFileContents(filePath, backupResult.content)
+              loaded = true
             }
+          } catch (backupErr) {
+            console.log('[FileViewer] Backup read failed, will try sandbox:', backupErr)
           }
-        } else {
-          // Read from local disk
-          if (isBinary) {
-            // Read as binary file (base64)
-            const result = await window.api.workspace.readBinaryFile(threadId, filePath)
-            if (result.success && result.content !== undefined) {
-              setBinaryContent(result.content)
-              setFileSize(result.size)
-            } else {
-              setError(result.error || 'Failed to read file')
+        }
+
+        // Step 2: Fallback to sandbox if backup didn't have the file
+        if (!loaded && sandboxEnabled) {
+          try {
+            const sandboxResult = await window.api.workspace.sandboxReadFile(threadId, filePath)
+            if (sandboxResult.success && sandboxResult.content !== undefined) {
+              setFileContents(filePath, sandboxResult.content)
+              loaded = true
             }
-          } else {
-            // Read as text file
-            const result = await window.api.workspace.readFile(threadId, filePath)
-            if (result.success && result.content !== undefined) {
-              setFileContents(filePath, result.content)
-              setFileSize(result.size)
-            } else {
-              setError(result.error || 'Failed to read file')
-            }
+          } catch (sandboxErr) {
+            console.log('[FileViewer] Sandbox read failed:', sandboxErr)
           }
+        }
+
+        if (!loaded) {
+          setError('File not found in backup or sandbox')
         }
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to read file')
@@ -105,7 +109,7 @@ export function FileViewer({ filePath, threadId }: FileViewerProps) {
     }
 
     loadFile()
-  }, [threadId, filePath, content, binaryContent, setFileContents, isBinary, sandboxEnabled])
+  }, [threadId, filePath, content, binaryContent, setFileContents, isBinary, sandboxEnabled, activeAgentId])
 
   if (isLoading) {
     return (
@@ -175,7 +179,7 @@ export function FileViewer({ filePath, threadId }: FileViewerProps) {
   }
 
   if (fileTypeInfo.type === 'binary') {
-    return <BinaryFileViewer filePath={filePath} size={fileSize} />
+    return <BinaryFileViewer filePath={filePath} size={undefined} />
   }
 
   // Default to code/text viewer

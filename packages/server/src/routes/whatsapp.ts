@@ -142,15 +142,13 @@ router.get('/agent/config', requireAuth, async (req, res) => {
       res.json({
         enabled: false,
         agent_id: null,
-        thread_timeout_minutes: 30,
-        workspace_path: null
+        thread_timeout_minutes: 30
       })
     } else {
       res.json({
         enabled: !!config.enabled,
         agent_id: config.agent_id,
-        thread_timeout_minutes: config.thread_timeout_minutes,
-        workspace_path: config.workspace_path
+        thread_timeout_minutes: config.thread_timeout_minutes
       })
     }
   } catch (error) {
@@ -163,13 +161,12 @@ router.get('/agent/config', requireAuth, async (req, res) => {
 router.patch('/agent/config', requireAuth, async (req, res) => {
   try {
     const userId = req.user!.userId
-    const { enabled, agent_id, thread_timeout_minutes, workspace_path } = req.body
+    const { enabled, agent_id, thread_timeout_minutes } = req.body
 
     const updates: {
       enabled?: number
       agent_id?: string | null
       thread_timeout_minutes?: number
-      workspace_path?: string | null
     } = {}
 
     if (enabled !== undefined) {
@@ -181,16 +178,12 @@ router.patch('/agent/config', requireAuth, async (req, res) => {
     if (thread_timeout_minutes !== undefined) {
       updates.thread_timeout_minutes = thread_timeout_minutes
     }
-    if (workspace_path !== undefined) {
-      updates.workspace_path = workspace_path
-    }
 
     const config = upsertWhatsAppAgentConfig(userId, updates)
     res.json({
       enabled: !!config.enabled,
       agent_id: config.agent_id,
-      thread_timeout_minutes: config.thread_timeout_minutes,
-      workspace_path: config.workspace_path
+      thread_timeout_minutes: config.thread_timeout_minutes
     })
   } catch (error) {
     console.error('[WhatsApp] Update agent config error:', error)

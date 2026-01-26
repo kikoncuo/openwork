@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { createDeepAgent } from 'deepagents'
-import { getDefaultModel, getEnabledMcpServers } from '../settings.js'
+import { getDefaultModel, getEnabledMcpServers, getToolConfigMap } from '../settings.js'
 import { getApiKey, getThreadCheckpointPath, getCustomPrompt, getLearnedInsights, addLearnedInsight } from '../storage.js'
 import { getAgent, getAgentConfig, updateAgentConfig } from '../db/agents.js'
 import { getThread, getAgentFileBackup } from '../db/index.js'
@@ -8,14 +8,16 @@ import { ChatAnthropic } from '@langchain/anthropic'
 import { ChatOpenAI } from '@langchain/openai'
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai'
 import { SqlJsSaver } from '../checkpointer/sqljs-saver.js'
-import { LocalSandbox } from './local-sandbox.js'
 import { createE2bSandboxBackend, getE2bWorkspacePath } from './e2b-sandbox.js'
-import { startBackupScheduler, stopBackupScheduler, stopAllBackupSchedulers } from './backup-scheduler.js'
+import { startBackupScheduler, stopAllBackupSchedulers } from './backup-scheduler.js'
 import { MultiServerMCPClient } from '@langchain/mcp-adapters'
 
-// Check if E2B is available
-const E2B_ENABLED = !!process.env.E2B_API_KEY
-console.log('[Runtime] E2B_ENABLED:', E2B_ENABLED)
+// E2B is required - check at startup
+if (!process.env.E2B_API_KEY) {
+  console.error('[Runtime] ERROR: E2B_API_KEY environment variable is required.')
+  console.error('[Runtime] Please set E2B_API_KEY to use the E2B cloud sandbox.')
+}
+console.log('[Runtime] E2B_API_KEY configured:', !!process.env.E2B_API_KEY)
 import { DynamicStructuredTool } from '@langchain/core/tools'
 import { z } from 'zod'
 
@@ -172,8 +174,6 @@ export interface CreateAgentRuntimeOptions {
   threadId: string
   /** Model ID to use (defaults to configured default model) */
   modelId?: string
-  /** Workspace path - REQUIRED for agent to operate on files */
-  workspacePath: string
 }
 
 /**
@@ -250,21 +250,20 @@ export type AgentRuntime = any // Avoid excessive type depth from createDeepAgen
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function createAgentRuntime(options: CreateAgentRuntimeOptions): Promise<any> {
-  const { threadId, modelId, workspacePath } = options
+  const { threadId, modelId } = options
 
   if (!threadId) {
     throw new Error('Thread ID is required for checkpointing.')
   }
 
-  if (!workspacePath) {
+  if (!process.env.E2B_API_KEY) {
     throw new Error(
-      'Workspace path is required. Please select a workspace folder before running the agent.'
+      'E2B_API_KEY environment variable is required. Please configure E2B to use the cloud sandbox.'
     )
   }
 
   console.log('[Runtime] Creating agent runtime...')
   console.log('[Runtime] Thread ID:', threadId)
-  console.log('[Runtime] Workspace path:', workspacePath)
 
   // Load agent config for this thread
   const thread = getThread(threadId)
@@ -305,47 +304,27 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions): Pr
   const checkpointer = await getCheckpointer(threadId)
   console.log('[Runtime] Checkpointer ready for thread:', threadId)
 
-  // Determine if we should use E2B cloud sandbox or LocalSandbox
-  const useE2b = E2B_ENABLED
-  console.log('[Runtime] E2B enabled:', useE2b)
-
-  // Create backend - both modes need a backend that implements SandboxBackendProtocol
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let backend: any
-
-  if (useE2b && agentId) {
-    // Use E2B cloud sandbox - create backend that implements SandboxBackendProtocol
-    // Each agent has its own sandbox, shared across all threads using that agent
-    console.log('[Runtime] Using E2B cloud sandbox for agent:', agentId)
-
-    // Get any existing file backups for the AGENT (not thread) for recovery
-    const backedUpFiles = getAgentFileBackup(agentId)
-    if (backedUpFiles && backedUpFiles.length > 0) {
-      console.log(`[Runtime] Found ${backedUpFiles.length} backed up files for agent ${agentId} recovery`)
-    }
-
-    // Create sandbox backend with AGENT ID (not thread ID)
-    backend = await createE2bSandboxBackend(agentId, backedUpFiles || undefined)
-    console.log('[Runtime] E2B backend created:', backend.id)
-
-    // Start the backup scheduler for periodic file backups (agent-based)
-    startBackupScheduler(agentId)
-    console.log('[Runtime] Backup scheduler started for agent:', agentId)
-  } else {
-    // Use LocalSandbox for local file operations
-    if (!workspacePath) {
-      throw new Error(
-        'Workspace path is required when E2B is not enabled. Please select a workspace folder before running the agent.'
-      )
-    }
-    backend = new LocalSandbox({
-      rootDir: workspacePath,
-      virtualMode: false, // Use absolute system paths for consistency with shell commands
-      timeout: 120_000, // 2 minutes
-      maxOutputBytes: 100_000 // ~100KB
-    })
-    console.log('[Runtime] LocalSandbox backend created:', backend.id)
+  // Always use E2B cloud sandbox
+  if (!agentId) {
+    throw new Error('Agent ID is required for E2B sandbox. Please assign an agent to this thread.')
   }
+
+  console.log('[Runtime] Using E2B cloud sandbox for agent:', agentId)
+
+  // Get any existing file backups for the AGENT (not thread) for recovery
+  const backedUpFiles = getAgentFileBackup(agentId)
+  if (backedUpFiles && backedUpFiles.length > 0) {
+    console.log(`[Runtime] Found ${backedUpFiles.length} backed up files for agent ${agentId} recovery`)
+  }
+
+  // Create sandbox backend with AGENT ID (not thread ID)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const backend: any = await createE2bSandboxBackend(agentId, backedUpFiles || undefined)
+  console.log('[Runtime] E2B backend created:', backend.id)
+
+  // Start the backup scheduler for periodic file backups (agent-based)
+  startBackupScheduler(agentId)
+  console.log('[Runtime] Backup scheduler started for agent:', agentId)
 
   // Load MCP tools from enabled servers (use agent-specific if available)
   const mcpTools = await initializeMcpTools(agentConfig?.mcp_servers)
@@ -391,36 +370,22 @@ The insight will be added to your system prompt for all future interactions.`,
     }
   })
 
-  // Generate system prompt based on mode (E2B or LocalSandbox)
-  const effectiveWorkspacePath = useE2b ? getE2bWorkspacePath() : workspacePath
-  const systemPrompt = getSystemPrompt(effectiveWorkspacePath, agentConfig ?? undefined)
+  // Generate system prompt - always use E2B workspace path
+  const workspacePath = getE2bWorkspacePath()
+  const systemPrompt = getSystemPrompt(workspacePath, agentConfig ?? undefined)
 
-  // Custom filesystem prompt depends on mode
-  let filesystemSystemPrompt: string
-  if (useE2b) {
-    filesystemSystemPrompt = `You have access to a secure cloud sandbox. All file paths use absolute paths within the sandbox.
+  // E2B filesystem system prompt
+  const filesystemSystemPrompt = `You have access to a secure cloud sandbox. All file paths use absolute paths within the sandbox.
 
 Available tools:
 - run_code: Execute Python code directly in the sandbox
 - execute: Run shell commands in the sandbox
-- ls: List files in a directory (e.g., ls("${effectiveWorkspacePath}"))
+- ls: List files in a directory (e.g., ls("${workspacePath}"))
 - read_file: Read a file from the sandbox
 - write_file: Write to a file in the sandbox
 
-The sandbox root is: ${effectiveWorkspacePath}
+The sandbox root is: ${workspacePath}
 Files and installed packages persist between calls.`
-  } else {
-    filesystemSystemPrompt = `You have access to a filesystem. All file paths use fully qualified absolute system paths.
-
-- ls: list files in a directory (e.g., ls("${effectiveWorkspacePath}"))
-- read_file: read a file from the filesystem
-- write_file: write to a file in the filesystem
-- edit_file: edit a file in the filesystem
-- glob: find files matching a pattern (e.g., "**/*.py")
-- grep: search for text within files
-
-The workspace root is: ${effectiveWorkspacePath}`
-  }
 
   // Add WhatsApp tools if connected AND user has ID
   // Extract userId from thread for user-scoped WhatsApp operations
@@ -436,13 +401,34 @@ The workspace root is: ${effectiveWorkspacePath}`
   // Note: Filesystem tools (ls, read, write, edit, glob, grep, execute) come from the backend
   const allTools = [...mcpTools, learnInsightTool, ...whatsappTools]
 
-  // Build interrupt list - execute always requires approval, plus WhatsApp send if connected
+  // Build interrupt list based on tool approval settings
+  // Start with execute as default (always requires approval for safety)
   const interruptOn: Record<string, boolean> = { execute: true }
+
+  // Add WhatsApp send tools if connected
   if (whatsappTools.length > 0) {
     for (const toolName of getWhatsAppInterruptTools()) {
       interruptOn[toolName] = true
     }
   }
+
+  // Apply user's tool approval settings from config
+  const toolConfigMap = getToolConfigMap()
+  for (const [toolId, config] of Object.entries(toolConfigMap)) {
+    if (config.requireApproval === true) {
+      // User explicitly set this tool to require approval
+      interruptOn[toolId] = true
+    } else if (config.requireApproval === false) {
+      // User explicitly set this tool to NOT require approval
+      // Only remove from interruptOn if it's not a safety-critical override
+      // (We still keep execute requiring approval by default for safety)
+      if (toolId !== 'execute') {
+        delete interruptOn[toolId]
+      }
+    }
+  }
+
+  console.log('[Runtime] Tool approval settings applied:', Object.keys(interruptOn))
 
   // Build agent config - always include backend (E2B or LocalSandbox)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -463,11 +449,7 @@ The workspace root is: ${effectiveWorkspacePath}`
   const agent = createDeepAgent(agentOptions as Parameters<typeof createDeepAgent>[0])
 
   // Log what was created
-  if (useE2b) {
-    console.log('[Runtime] Deep agent created with E2B cloud sandbox:', backend.id)
-  } else {
-    console.log('[Runtime] Deep agent created with LocalSandbox at:', workspacePath)
-  }
+  console.log('[Runtime] Deep agent created with E2B cloud sandbox:', backend.id)
   console.log('[Runtime] Backend provides: ls, read_file, write_file, edit_file, glob, grep, execute')
   console.log('[Runtime] Additional tools: learn_insight')
   if (mcpTools.length > 0) {

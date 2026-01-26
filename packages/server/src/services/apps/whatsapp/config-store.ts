@@ -57,24 +57,19 @@ export function upsertWhatsAppAgentConfig(
       setClauses.push('thread_timeout_minutes = ?')
       values.push(updates.thread_timeout_minutes)
     }
-    if (updates.workspace_path !== undefined) {
-      setClauses.push('workspace_path = ?')
-      values.push(updates.workspace_path)
-    }
 
     values.push(userId)
     database.run(`UPDATE whatsapp_agent_config SET ${setClauses.join(', ')} WHERE user_id = ?`, values)
   } else {
     // Create new config
     database.run(
-      `INSERT INTO whatsapp_agent_config (user_id, enabled, agent_id, thread_timeout_minutes, workspace_path, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO whatsapp_agent_config (user_id, enabled, agent_id, thread_timeout_minutes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         userId,
         updates.enabled ?? 0,
         updates.agent_id ?? null,
         updates.thread_timeout_minutes ?? 30,
-        updates.workspace_path ?? null,
         now,
         now
       ]

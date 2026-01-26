@@ -5,7 +5,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { MessageSquare, Check, Loader2, Power, PowerOff, RefreshCw, AlertCircle, Bot, FolderOpen } from 'lucide-react'
+import { MessageSquare, Loader2, Power, PowerOff, RefreshCw, AlertCircle, Bot, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -25,18 +25,21 @@ import {
   SelectValue
 } from '@/components/ui/select'
 import { useAppStore } from '@/lib/store'
+import { ConnectionHealthBadge, type HealthStatus } from './ConnectionHealthBadge'
+import { AppWarningBanner } from './AppWarningBanner'
 
 interface ConnectionStatus {
   connected: boolean
   phoneNumber: string | null
   connectedAt: number | null
+  healthStatus?: HealthStatus
+  warningMessage?: string | null
 }
 
 interface AgentConfig {
   enabled: boolean
   agent_id: string | null
   thread_timeout_minutes: number
-  workspace_path: string | null
 }
 
 export function WhatsAppSettings(): React.JSX.Element {
@@ -44,8 +47,11 @@ export function WhatsAppSettings(): React.JSX.Element {
   const [status, setStatus] = useState<ConnectionStatus>({
     connected: false,
     phoneNumber: null,
-    connectedAt: null
+    connectedAt: null,
+    healthStatus: 'unknown',
+    warningMessage: null
   })
+  const [reconnecting, setReconnecting] = useState(false)
   const [loading, setLoading] = useState(true)
   const [connecting, setConnecting] = useState(false)
   const [disconnecting, setDisconnecting] = useState(false)
@@ -57,8 +63,7 @@ export function WhatsAppSettings(): React.JSX.Element {
   const [agentConfig, setAgentConfig] = useState<AgentConfig>({
     enabled: false,
     agent_id: null,
-    thread_timeout_minutes: 30,
-    workspace_path: null
+    thread_timeout_minutes: 30
   })
   const [agentConfigLoading, setAgentConfigLoading] = useState(false)
   const [agentConfigSaving, setAgentConfigSaving] = useState(false)
@@ -102,17 +107,22 @@ export function WhatsAppSettings(): React.JSX.Element {
   // Subscribe to connection changes
   useEffect(() => {
     const cleanup = window.api.whatsapp.onConnectionChange((data) => {
-      setStatus({
+      setStatus(prev => ({
+        ...prev,
         connected: data.connected,
         phoneNumber: data.phoneNumber || null,
-        connectedAt: data.connected ? Date.now() : null
-      })
+        connectedAt: data.connected ? Date.now() : null,
+        // Clear health warning on fresh connection
+        healthStatus: data.connected ? 'healthy' : 'unknown',
+        warningMessage: null
+      }))
 
       // Close QR modal on successful connection
       if (data.connected) {
         setQrModalOpen(false)
         setQrCode(null)
         setConnecting(false)
+        setReconnecting(false)
       }
     })
 
@@ -122,6 +132,56 @@ export function WhatsAppSettings(): React.JSX.Element {
     return () => {
       cleanup()
       window.api.whatsapp.unsubscribeConnection()
+    }
+  }, [])
+
+  // Subscribe to connection health status updates via WebSocket
+  useEffect(() => {
+    const handleConnectionStatus = (data: {
+      appType: string
+      eventType: string
+      status?: string
+      healthStatus?: HealthStatus
+      warningMessage?: string
+    }) => {
+      // Only handle whatsapp events
+      if (data.appType !== 'whatsapp') return
+
+      console.log('[WhatsApp] Connection status update:', data)
+
+      if (data.eventType === 'app:health_warning') {
+        setStatus(prev => ({
+          ...prev,
+          healthStatus: data.healthStatus || 'warning',
+          warningMessage: data.warningMessage || 'Connection needs attention'
+        }))
+      } else if (data.eventType === 'app:health_cleared') {
+        setStatus(prev => ({
+          ...prev,
+          healthStatus: 'healthy',
+          warningMessage: null
+        }))
+        setReconnecting(false)
+      } else if (data.eventType === 'app:disconnected') {
+        setStatus(prev => ({
+          ...prev,
+          connected: false,
+          healthStatus: 'unknown',
+          warningMessage: null
+        }))
+        setReconnecting(false)
+      }
+    }
+
+    // Listen for WebSocket connection status events
+    if (window.api?.socket?.on) {
+      window.api.socket.on('connection:status', handleConnectionStatus)
+    }
+
+    return () => {
+      if (window.api?.socket?.off) {
+        window.api.socket.off('connection:status', handleConnectionStatus)
+      }
     }
   }, [])
 
@@ -150,11 +210,15 @@ export function WhatsAppSettings(): React.JSX.Element {
         connected: boolean
         phoneNumber: string | null
         connectedAt: string | null
+        healthStatus?: HealthStatus
+        warningMessage?: string | null
       }
       setStatus({
         connected: currentStatus.connected,
         phoneNumber: currentStatus.phoneNumber,
-        connectedAt: currentStatus.connectedAt ? new Date(currentStatus.connectedAt).getTime() : null
+        connectedAt: currentStatus.connectedAt ? new Date(currentStatus.connectedAt).getTime() : null,
+        healthStatus: currentStatus.healthStatus || (currentStatus.connected ? 'healthy' : 'unknown'),
+        warningMessage: currentStatus.warningMessage || null
       })
     } catch (error) {
       console.error('Failed to load WhatsApp status:', error)
@@ -192,12 +256,43 @@ export function WhatsAppSettings(): React.JSX.Element {
       setStatus({
         connected: false,
         phoneNumber: null,
-        connectedAt: null
+        connectedAt: null,
+        healthStatus: 'unknown',
+        warningMessage: null
       })
     } catch (error) {
       console.error('Failed to disconnect WhatsApp:', error)
     } finally {
       setDisconnecting(false)
+    }
+  }, [])
+
+  const handleReconnect = useCallback(async (): Promise<void> => {
+    setReconnecting(true)
+    try {
+      // Disconnect first, then reconnect
+      await window.api.whatsapp.disconnect()
+      // Small delay before reconnecting
+      await new Promise(resolve => setTimeout(resolve, 500))
+      // Reconnect - this will show QR modal if needed
+      setConnecting(true)
+      setQrError(null)
+      setQrCode(null)
+      setQrModalOpen(true)
+
+      const qr = await window.api.whatsapp.connect()
+      if (qr) {
+        setQrCode(qr)
+      } else {
+        // Already connected, close modal
+        setQrModalOpen(false)
+        await loadStatus()
+        setReconnecting(false)
+      }
+    } catch (error) {
+      console.error('Failed to reconnect WhatsApp:', error)
+      setReconnecting(false)
+      setConnecting(false)
     }
   }, [])
 
@@ -230,14 +325,10 @@ export function WhatsAppSettings(): React.JSX.Element {
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-medium">WhatsApp</span>
-                {status.connected ? (
-                  <span className="flex items-center gap-1 text-xs text-status-nominal">
-                    <Check className="size-3" />
-                    Connected
-                  </span>
-                ) : (
-                  <span className="text-xs text-muted-foreground">Not connected</span>
-                )}
+                <ConnectionHealthBadge
+                  status={status.connected ? 'connected' : 'disconnected'}
+                  healthStatus={status.healthStatus || 'unknown'}
+                />
               </div>
               {status.connected && status.phoneNumber && (
                 <div className="text-sm text-muted-foreground">
@@ -291,7 +382,18 @@ export function WhatsAppSettings(): React.JSX.Element {
           </div>
         </div>
 
-        {status.connected && (
+        {/* Warning Banner - shown when health is degraded */}
+        {status.connected && status.warningMessage && (
+          <AppWarningBanner
+            message={status.warningMessage}
+            recommendation="Try reconnecting to restore full functionality"
+            onReconnect={handleReconnect}
+            reconnecting={reconnecting}
+            className="mt-3"
+          />
+        )}
+
+        {status.connected && !status.warningMessage && (
           <div className="mt-3 pt-3 border-t border-border/50">
             <p className="text-xs text-muted-foreground">
               WhatsApp is connected. The agent can now search messages, view contacts, and send messages on your behalf.
@@ -379,53 +481,15 @@ export function WhatsAppSettings(): React.JSX.Element {
                 </p>
               </div>
 
-              {/* Workspace Path */}
-              <div className="space-y-2">
-                <Label htmlFor="workspace-path">Workspace Path</Label>
-                <div className="flex gap-2">
-                  <Input
-                    id="workspace-path"
-                    type="text"
-                    value={agentConfig.workspace_path || ''}
-                    onChange={(e) => saveAgentConfig({ workspace_path: e.target.value || null })}
-                    disabled={agentConfigSaving}
-                    placeholder="/path/to/workspace"
-                    className="flex-1"
-                  />
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={async () => {
-                      const path = await window.api.workspace.select()
-                      if (path) {
-                        saveAgentConfig({ workspace_path: path })
-                      }
-                    }}
-                    disabled={agentConfigSaving}
-                  >
-                    <FolderOpen className="size-4" />
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Agent will have access to files in this directory
-                </p>
-              </div>
-
               {/* Status Summary */}
-              {(!agentConfig.agent_id || !agentConfig.workspace_path) && (
+              {!agentConfig.agent_id && (
                 <div className="flex items-center gap-2 p-2 bg-amber-500/10 border border-amber-500/30 rounded text-amber-500 text-xs">
                   <AlertCircle className="size-4 shrink-0" />
-                  <span>
-                    {!agentConfig.agent_id && !agentConfig.workspace_path
-                      ? 'Select an agent and workspace path to enable auto-responses'
-                      : !agentConfig.agent_id
-                        ? 'Select an agent to enable auto-responses'
-                        : 'Set a workspace path to enable auto-responses'}
-                  </span>
+                  <span>Select an agent to enable auto-responses</span>
                 </div>
               )}
 
-              {agentConfig.agent_id && agentConfig.workspace_path && (
+              {agentConfig.agent_id && (
                 <div className="flex items-center gap-2 p-2 bg-status-nominal/10 border border-status-nominal/30 rounded text-status-nominal text-xs">
                   <Check className="size-4 shrink-0" />
                   <span>Auto-response is active. Incoming messages will be answered by the agent.</span>

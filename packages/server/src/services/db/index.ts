@@ -164,14 +164,8 @@ export async function initializeDatabase(): Promise<SqlJsDatabase> {
     db.run(`ALTER TABLE threads ADD COLUMN e2b_sandbox_id TEXT`)
   }
 
-  // Add default_workspace_path column to agents if it doesn't exist
-  const agentColumns = db.exec("PRAGMA table_info(agents)")
-  const hasWorkspacePath = agentColumns[0]?.values?.some((col) => col[1] === 'default_workspace_path')
-  if (!hasWorkspacePath) {
-    db.run(`ALTER TABLE agents ADD COLUMN default_workspace_path TEXT`)
-  }
-
   // Add user_id column to agents if it doesn't exist
+  const agentColumns = db.exec("PRAGMA table_info(agents)")
   const hasAgentUserId = agentColumns[0]?.values?.some((col) => col[1] === 'user_id')
   if (!hasAgentUserId) {
     db.run(`ALTER TABLE agents ADD COLUMN user_id TEXT REFERENCES users(user_id)`)
@@ -240,15 +234,50 @@ export async function initializeDatabase(): Promise<SqlJsDatabase> {
     )
   `)
 
+  // Legacy app_connections migration (if old table exists without user_id)
+  // Must run BEFORE creating new table or indexes
+  const appConnColumns = db.exec("PRAGMA table_info(app_connections)")
+  const hasAppConnUserId = appConnColumns[0]?.values?.some((col) => col[1] === 'user_id')
+  if (appConnColumns.length > 0 && !hasAppConnUserId) {
+    console.log('Migrating app_connections table to new schema...')
+    db.run(`DROP TABLE IF EXISTS app_connections`)
+  }
+
+  // Now create the table with correct schema (or it already exists with correct schema)
   db.run(`
     CREATE TABLE IF NOT EXISTS app_connections (
-      app_id TEXT PRIMARY KEY,
-      enabled INTEGER DEFAULT 1,
-      connected INTEGER DEFAULT 0,
-      connection_data TEXT,
-      updated_at INTEGER NOT NULL
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      app_type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'disconnected',
+      health_status TEXT DEFAULT 'unknown',
+      warning_message TEXT,
+      last_health_check_at TEXT,
+      last_successful_activity_at TEXT,
+      metadata TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, app_type),
+      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
     )
   `)
+
+  // Health event log for debugging connection issues
+  db.run(`
+    CREATE TABLE IF NOT EXISTS app_health_events (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      details TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (connection_id) REFERENCES app_connections(id) ON DELETE CASCADE
+    )
+  `)
+
+  // Create indexes after tables are properly set up
+  db.run(`CREATE INDEX IF NOT EXISTS idx_app_connections_user ON app_connections(user_id)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_app_connections_user_type ON app_connections(user_id, app_type)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_app_health_events_connection ON app_health_events(connection_id)`)
 
   // E2B sandbox file backups table (thread-based - deprecated, kept for migration)
   db.run(`
@@ -412,6 +441,26 @@ export async function initializeDatabase(): Promise<SqlJsDatabase> {
     db.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_timestamp ON whatsapp_messages(timestamp)`)
   }
 
+  // Webhooks table for hook system
+  db.run(`
+    CREATE TABLE IF NOT EXISTS webhooks (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      secret TEXT,
+      event_types TEXT NOT NULL,
+      enabled INTEGER DEFAULT 1,
+      retry_count INTEGER DEFAULT 3,
+      timeout_ms INTEGER DEFAULT 5000,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+    )
+  `)
+
+  db.run(`CREATE INDEX IF NOT EXISTS idx_webhooks_user ON webhooks(user_id)`)
+
   saveToDisk()
 
   // Run migrations (imported lazily to avoid circular deps)
@@ -471,7 +520,6 @@ export interface Agent {
   color: string
   icon: string
   model_default: string
-  default_workspace_path: string | null
   is_default: number  // SQLite uses 0/1 for boolean
   user_id: string | null
   e2b_sandbox_id: string | null
@@ -530,11 +578,25 @@ export interface WhatsAppMessage {
 }
 
 export interface AppConnection {
-  app_id: string
-  enabled: number  // 0 or 1
-  connected: number  // 0 or 1
-  connection_data: string | null  // JSON
-  updated_at: number
+  id: string
+  user_id: string
+  app_type: string
+  status: 'disconnected' | 'connecting' | 'connected' | 'degraded'
+  health_status: 'healthy' | 'warning' | 'critical' | 'unknown'
+  warning_message: string | null
+  last_health_check_at: string | null
+  last_successful_activity_at: string | null
+  metadata: string | null  // JSON
+  created_at: string
+  updated_at: string
+}
+
+export interface AppHealthEvent {
+  id: string
+  connection_id: string
+  event_type: string
+  details: string | null  // JSON
+  created_at: string
 }
 
 // WhatsApp Agent Configuration (per user)
@@ -543,7 +605,6 @@ export interface WhatsAppAgentConfig {
   enabled: number  // 0 or 1
   agent_id: string | null
   thread_timeout_minutes: number
-  workspace_path: string | null
   created_at: number
   updated_at: number
 }
@@ -939,4 +1000,135 @@ export function updateAgentSandboxId(agentId: string, sandboxId: string | null):
     [sandboxId, now, agentId]
   )
   saveToDisk()
+}
+
+// ============================================
+// Single-File Backup Operations
+// ============================================
+
+/**
+ * Get a single file from an agent's backup by path.
+ */
+export function getAgentFileByPath(agentId: string, filePath: string): BackedUpFile | null {
+  const backup = getAgentFileBackup(agentId)
+  if (!backup) return null
+
+  return backup.find(f => f.path === filePath) || null
+}
+
+/**
+ * Save or update a single file in an agent's backup.
+ */
+export function saveAgentFile(agentId: string, path: string, content: string): void {
+  const database = getDb()
+  const now = Date.now()
+
+  // Get existing backup or create empty array
+  const existingBackup = getAgentFileBackup(agentId) || []
+
+  // Find and update or add the file
+  const existingIndex = existingBackup.findIndex(f => f.path === path)
+  if (existingIndex >= 0) {
+    existingBackup[existingIndex] = { path, content }
+  } else {
+    existingBackup.push({ path, content })
+  }
+
+  // Calculate totals
+  const filesJson = JSON.stringify(existingBackup)
+  const totalSize = existingBackup.reduce((sum, f) => sum + f.content.length, 0)
+
+  // Save back to database
+  database.run(
+    `INSERT OR REPLACE INTO agent_file_backups
+     (agent_id, files, file_count, total_size, created_at, updated_at)
+     VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM agent_file_backups WHERE agent_id = ?), ?), ?)`,
+    [agentId, filesJson, existingBackup.length, totalSize, agentId, now, now]
+  )
+
+  saveToDisk()
+}
+
+/**
+ * Delete a single file from an agent's backup.
+ * Returns true if the file was found and deleted, false otherwise.
+ */
+export function deleteAgentFile(agentId: string, path: string): boolean {
+  const database = getDb()
+  const now = Date.now()
+
+  // Get existing backup
+  const existingBackup = getAgentFileBackup(agentId)
+  if (!existingBackup) return false
+
+  // Find and remove the file
+  const existingIndex = existingBackup.findIndex(f => f.path === path)
+  if (existingIndex < 0) return false
+
+  existingBackup.splice(existingIndex, 1)
+
+  // Calculate totals
+  const filesJson = JSON.stringify(existingBackup)
+  const totalSize = existingBackup.reduce((sum, f) => sum + f.content.length, 0)
+
+  // Save back to database
+  database.run(
+    `UPDATE agent_file_backups SET files = ?, file_count = ?, total_size = ?, updated_at = ? WHERE agent_id = ?`,
+    [filesJson, existingBackup.length, totalSize, now, agentId]
+  )
+
+  saveToDisk()
+  return true
+}
+
+/**
+ * List files from an agent's backup (path + size, no content).
+ * Returns an array of file metadata without the actual content.
+ */
+export function listAgentBackupFiles(agentId: string): Array<{path: string, size: number, is_dir: boolean}> {
+  const backup = getAgentFileBackup(agentId)
+  if (!backup) return []
+
+  // Build a set of directories from file paths
+  const directories = new Set<string>()
+
+  for (const file of backup) {
+    // Extract all parent directories from the path
+    const parts = file.path.split('/')
+    let currentPath = ''
+    for (let i = 0; i < parts.length - 1; i++) {
+      currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i]
+      if (currentPath && currentPath !== '/') {
+        directories.add(currentPath.startsWith('/') ? currentPath : '/' + currentPath)
+      }
+    }
+  }
+
+  // Create file entries
+  const files = backup.map(f => ({
+    path: f.path,
+    size: f.content.length,
+    is_dir: false
+  }))
+
+  // Add directory entries
+  for (const dir of directories) {
+    // Don't add if there's already a file with this path (shouldn't happen, but just in case)
+    if (!backup.some(f => f.path === dir)) {
+      files.push({
+        path: dir,
+        size: 0,
+        is_dir: true
+      })
+    }
+  }
+
+  // Sort: directories first, then by path
+  files.sort((a, b) => {
+    if (a.is_dir && !b.is_dir) return -1
+    if (!a.is_dir && b.is_dir) return 1
+    return a.path.localeCompare(b.path)
+  })
+
+  return files
 }

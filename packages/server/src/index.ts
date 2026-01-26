@@ -9,6 +9,9 @@ import { Server as SocketIOServer } from 'socket.io'
 import { initializeDatabase } from './services/db/index.js'
 import { registerRoutes } from './routes/index.js'
 import { registerWebSocketHandlers } from './websocket/index.js'
+import { initializeHookSystem } from './services/hooks/index.js'
+import { connectionManager } from './services/apps/connection-manager.js'
+import { registerWhatsAppAdapter } from './services/apps/whatsapp/whatsapp-adapter.js'
 
 const app = express()
 const httpServer = createServer(app)
@@ -67,6 +70,15 @@ async function main() {
   // Initialize database
   await initializeDatabase()
   console.log('Database initialized')
+
+  // Initialize hook system
+  initializeHookSystem()
+  console.log('Hook system initialized')
+
+  // Initialize connection manager and register adapters
+  registerWhatsAppAdapter()
+  await connectionManager.initializeFromDatabase()
+  console.log('Connection manager initialized')
 
   // Register REST routes
   registerRoutes(app)
