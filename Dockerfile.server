@@ -1,0 +1,25 @@
+FROM node:22-slim
+
+WORKDIR /app
+
+# Copy package files for the server
+COPY packages/server/package.json ./
+COPY packages/server/.npmrc* ./
+
+# Install dependencies (production + dev for build)
+RUN npm install --legacy-peer-deps
+
+# Copy server source
+COPY packages/server/src ./src
+COPY packages/server/tsconfig.json ./
+
+# Build TypeScript
+RUN npx tsc
+
+# Remove dev dependencies
+RUN npm prune --production --legacy-peer-deps 2>/dev/null; exit 0
+
+EXPOSE 3001
+
+# Environment variables are provided at runtime via Dokploy
+CMD ["node", "dist/index.js"]
