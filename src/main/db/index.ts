@@ -202,6 +202,15 @@ export async function initializeDatabase(): Promise<SqlJsDatabase> {
     )
   `)
 
+  // Google Workspace integration table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS google_workspace_auth (
+      key TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
   db.run(`CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_threads_agent_id ON threads(agent_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_runs_thread_id ON runs(thread_id)`)

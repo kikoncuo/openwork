@@ -81,7 +81,7 @@ class MockE2bSandbox {
    * BACKUP-FIRST: Reads from backup database, no sandbox needed.
    */
   async lsInfo(path: string): Promise<Array<{ path: string; is_dir: boolean; size?: number }>> {
-    const backup = getAgentFileBackup(this.agentId)
+    const backup = await getAgentFileBackup(this.agentId)
     if (!backup || backup.length === 0) {
       return []
     }
@@ -124,7 +124,7 @@ class MockE2bSandbox {
    */
   async read(filePath: string, offset = 0, limit = 500): Promise<string> {
     // Try backup first
-    const file = getAgentFileByPath(this.agentId, filePath)
+    const file = await getAgentFileByPath(this.agentId, filePath)
     if (file) {
       const lines = file.content.split('\n')
       const slice = lines.slice(offset, offset + limit)
@@ -142,7 +142,7 @@ class MockE2bSandbox {
   async write(filePath: string, content: string): Promise<{ path?: string; error?: string }> {
     try {
       // Write to backup first (always available)
-      saveAgentFile(this.agentId, filePath, content)
+      await saveAgentFile(this.agentId, filePath, content)
       return { path: filePath }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Write failed'
@@ -161,7 +161,7 @@ class MockE2bSandbox {
     replaceAll = false
   ): Promise<{ path?: string; error?: string }> {
     // Read from backup first
-    const file = getAgentFileByPath(this.agentId, filePath)
+    const file = await getAgentFileByPath(this.agentId, filePath)
     if (!file) {
       return { error: `File not found: ${filePath}` }
     }
@@ -185,7 +185,7 @@ class MockE2bSandbox {
     }
 
     // Save to backup
-    saveAgentFile(this.agentId, filePath, newContent)
+    await saveAgentFile(this.agentId, filePath, newContent)
 
     return { path: filePath }
   }
@@ -195,7 +195,7 @@ class MockE2bSandbox {
    * BACKUP-FIRST: Filters backup files using glob pattern, no sandbox needed.
    */
   async globInfo(pattern: string, path?: string): Promise<Array<{ path: string; is_dir: boolean; size?: number }>> {
-    const backup = getAgentFileBackup(this.agentId)
+    const backup = await getAgentFileBackup(this.agentId)
     if (!backup || backup.length === 0) {
       return []
     }
@@ -236,7 +236,7 @@ class MockE2bSandbox {
     path?: string | null,
     glob?: string | null
   ): Promise<Array<{ path: string; line: number; text: string }> | string> {
-    const backup = getAgentFileBackup(this.agentId)
+    const backup = await getAgentFileBackup(this.agentId)
     if (!backup || backup.length === 0) {
       return []
     }
@@ -295,7 +295,7 @@ async function setupTestFiles(): Promise<void> {
   console.log('\n📁 Setting up test files in backup...')
 
   // Clear any existing backup
-  clearAgentFileBackup(TEST_AGENT_ID)
+  await clearAgentFileBackup(TEST_AGENT_ID)
 
   // Create test files
   const testFiles = [
@@ -307,7 +307,7 @@ async function setupTestFiles(): Promise<void> {
     { path: '/home/user/docs/readme.md', content: '# Project\n\nThis is a test project.\n\n## Usage\n\nRun the tests.' },
   ]
 
-  saveAgentFileBackup(TEST_AGENT_ID, testFiles)
+  await saveAgentFileBackup(TEST_AGENT_ID, testFiles)
   console.log(`  ✅ Created ${testFiles.length} test files\n`)
 }
 
@@ -404,7 +404,7 @@ async function testWrite(): Promise<void> {
     assertTrue(result.error === undefined, 'Should not have error')
 
     // Verify it was written
-    const file = getAgentFileByPath(TEST_AGENT_ID, '/home/user/newfile.txt')
+    const file = await getAgentFileByPath(TEST_AGENT_ID, '/home/user/newfile.txt')
     assertTrue(file !== null, 'File should exist in backup')
     assertEqual(file!.content, 'New content here')
   })
@@ -415,7 +415,7 @@ async function testWrite(): Promise<void> {
 
     assertEqual(result.path, '/home/user/overwrite.txt')
 
-    const file = getAgentFileByPath(TEST_AGENT_ID, '/home/user/overwrite.txt')
+    const file = await getAgentFileByPath(TEST_AGENT_ID, '/home/user/overwrite.txt')
     assertEqual(file!.content, 'Updated')
   })
 
@@ -424,7 +424,7 @@ async function testWrite(): Promise<void> {
 
     assertEqual(result.path, '/home/user/new/nested/dir/file.txt')
 
-    const file = getAgentFileByPath(TEST_AGENT_ID, '/home/user/new/nested/dir/file.txt')
+    const file = await getAgentFileByPath(TEST_AGENT_ID, '/home/user/new/nested/dir/file.txt')
     assertTrue(file !== null, 'Nested file should exist')
   })
 }
@@ -443,7 +443,7 @@ async function testEdit(): Promise<void> {
 
     assertEqual(result.path, '/home/user/edit1.txt')
 
-    const file = getAgentFileByPath(TEST_AGENT_ID, '/home/user/edit1.txt')
+    const file = await getAgentFileByPath(TEST_AGENT_ID, '/home/user/edit1.txt')
     assertEqual(file!.content, 'replaced bar foo')  // Only first 'foo' replaced
   })
 
@@ -453,7 +453,7 @@ async function testEdit(): Promise<void> {
 
     assertEqual(result.path, '/home/user/edit2.txt')
 
-    const file = getAgentFileByPath(TEST_AGENT_ID, '/home/user/edit2.txt')
+    const file = await getAgentFileByPath(TEST_AGENT_ID, '/home/user/edit2.txt')
     assertEqual(file!.content, 'X bar X baz X')  // All 'foo' replaced
   })
 
@@ -478,7 +478,7 @@ async function testEdit(): Promise<void> {
 
     assertEqual(result.path, '/home/user/edit4.txt')
 
-    const file = getAgentFileByPath(TEST_AGENT_ID, '/home/user/edit4.txt')
+    const file = await getAgentFileByPath(TEST_AGENT_ID, '/home/user/edit4.txt')
     assertEqual(file!.content, 'price is $200.00')
   })
 }
@@ -586,7 +586,7 @@ async function testGrepRaw(): Promise<void> {
 
 async function cleanup(): Promise<void> {
   console.log('\n🧹 Cleaning up...')
-  clearAgentFileBackup(TEST_AGENT_ID)
+  await clearAgentFileBackup(TEST_AGENT_ID)
   console.log('  ✅ Cleanup complete\n')
 }
 

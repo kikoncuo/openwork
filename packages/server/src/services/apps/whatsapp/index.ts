@@ -60,9 +60,29 @@ class WhatsAppService {
 
   /**
    * Get connection status
+   * If not connected, attempt to restore from stored credentials
    */
-  getConnectionStatus(userId: string): ConnectionStatus {
-    return socketManager.getConnectionStatus(userId)
+  async getConnectionStatus(userId: string): Promise<ConnectionStatus> {
+    const status = socketManager.getConnectionStatus(userId)
+
+    // If not connected and not already connecting, try to restore
+    if (!status.connected && !status.connecting) {
+      const authStore = getAuthStore()
+      const hasStoredCreds = await authStore.hasAuthState(userId)
+
+      if (hasStoredCreds) {
+        if (!this.initialized) {
+          await this.initialize()
+          return socketManager.getConnectionStatus(userId)
+        }
+
+        // If already initialized but not connected, try individual reconnect
+        await socketManager.autoReconnectIfNeeded(userId)
+        return socketManager.getConnectionStatus(userId)
+      }
+    }
+
+    return status
   }
 
   /**
@@ -84,13 +104,13 @@ class WhatsAppService {
   /**
    * Get contacts
    */
-  getContacts(userId: string, query?: string): ContactInfo[] {
+  async getContacts(userId: string, query?: string): Promise<ContactInfo[]> {
     // First try from socket manager (live data)
-    let contacts = socketManager.getContacts(userId, query)
+    let contacts = await socketManager.getContacts(userId, query)
 
     // If no contacts from socket, fall back to database
     if (contacts.length === 0) {
-      contacts = getMessageStore().getContacts(userId, query)
+      contacts = await getMessageStore().getContacts(userId, query)
     }
 
     return contacts
@@ -99,13 +119,13 @@ class WhatsAppService {
   /**
    * Get recent chats
    */
-  getChats(userId: string, limit?: number): ChatInfo[] {
+  async getChats(userId: string, limit?: number): Promise<ChatInfo[]> {
     // First try from socket manager (live data)
-    let chats = socketManager.getChats(userId, limit)
+    let chats = await socketManager.getChats(userId, limit)
 
     // If no chats from socket, fall back to database
     if (chats.length === 0) {
-      chats = getMessageStore().getChats(userId, limit)
+      chats = await getMessageStore().getChats(userId, limit)
     }
 
     return chats
@@ -114,15 +134,15 @@ class WhatsAppService {
   /**
    * Search messages
    */
-  searchMessages(userId: string, query: string, chatJid?: string, limit?: number): MessageInfo[] {
-    return socketManager.searchMessages(userId, query, chatJid, limit)
+  async searchMessages(userId: string, query: string, chatJid?: string, limit?: number): Promise<MessageInfo[]> {
+    return await socketManager.searchMessages(userId, query, chatJid, limit)
   }
 
   /**
    * Get message history for a chat
    */
-  getMessageHistory(userId: string, chatJid: string, limit?: number): MessageInfo[] {
-    return socketManager.getMessageHistory(userId, chatJid, limit)
+  async getMessageHistory(userId: string, chatJid: string, limit?: number): Promise<MessageInfo[]> {
+    return await socketManager.getMessageHistory(userId, chatJid, limit)
   }
 
   /**

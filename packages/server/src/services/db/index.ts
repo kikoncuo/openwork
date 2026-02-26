@@ -1,505 +1,119 @@
-import initSqlJs, { Database as SqlJsDatabase } from 'sql.js'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
-import { dirname } from 'path'
-import { getDbPath } from '../storage.js'
-
-let db: SqlJsDatabase | null = null
-let saveTimer: ReturnType<typeof setTimeout> | null = null
-let dirty = false
+import { getSupabase } from './supabase-client.js'
 
 /**
- * Save database to disk (debounced)
+ * Initialize the database connection and seed data.
+ * Verifies Supabase connection and seeds admin user + default tier.
  */
-export function saveToDisk(): void {
-  if (!db) return
+export async function initializeDatabase(): Promise<void> {
+  const sb = getSupabase()
 
-  dirty = true
-
-  if (saveTimer) {
-    clearTimeout(saveTimer)
+  // Verify connection
+  const { error } = await sb.from('users').select('user_id').limit(1)
+  if (error) {
+    throw new Error(`Failed to connect to Supabase: ${error.message}`)
   }
 
-  saveTimer = setTimeout(() => {
-    if (db && dirty) {
-      const data = db.export()
-      writeFileSync(getDbPath(), Buffer.from(data))
-      dirty = false
-    }
-  }, 100)
-}
+  // Seed admin user (idempotent)
+  await sb
+    .from('users')
+    .update({ is_admin: 1 })
+    .eq('email', 'efpfefpf@gmail.com')
+    .eq('is_admin', 0)
 
-/**
- * Force immediate save
- */
-export async function flush(): Promise<void> {
-  if (saveTimer) {
-    clearTimeout(saveTimer)
-    saveTimer = null
-  }
-  if (db && dirty) {
-    const data = db.export()
-    writeFileSync(getDbPath(), Buffer.from(data))
-    dirty = false
-  }
-}
+  // Seed Tier 1 (Free) if not exists
+  const { data: tier } = await sb
+    .from('user_tiers')
+    .select('tier_id, default_model')
+    .eq('tier_id', 1)
+    .single()
 
-export function getDb(): SqlJsDatabase {
-  if (!db) {
-    throw new Error('Database not initialized. Call initializeDatabase() first.')
-  }
-  return db
-}
-
-export async function initializeDatabase(): Promise<SqlJsDatabase> {
-  const dbPath = getDbPath()
-  console.log('Initializing database at:', dbPath)
-
-  const SQL = await initSqlJs()
-
-  // Load existing database if it exists
-  if (existsSync(dbPath)) {
-    const buffer = readFileSync(dbPath)
-    db = new SQL.Database(buffer)
-  } else {
-    // Ensure directory exists
-    const dir = dirname(dbPath)
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
-    }
-    db = new SQL.Database()
+  if (!tier) {
+    const now = Date.now()
+    await sb.from('user_tiers').upsert({
+      tier_id: 1,
+      name: 'free',
+      display_name: 'Free',
+      default_model: 'claude-opus-4-5-20251101',
+      available_models: '["claude-opus-4-5-20251101"]',
+      features: '{"model_selection": false, "custom_providers": false}',
+      created_at: now,
+      updated_at: now
+    }, { onConflict: 'tier_id' })
+  } else if (tier.default_model !== 'claude-opus-4-5-20251101') {
+    await sb
+      .from('user_tiers')
+      .update({
+        default_model: 'claude-opus-4-5-20251101',
+        available_models: '["claude-opus-4-5-20251101"]',
+        updated_at: Date.now()
+      })
+      .eq('tier_id', 1)
   }
 
-  // Create tables if they don't exist
-  // Users table for authentication
-  db.run(`
-    CREATE TABLE IF NOT EXISTS users (
-      user_id TEXT PRIMARY KEY,
-      email TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      name TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `)
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS threads (
-      thread_id TEXT PRIMARY KEY,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      metadata TEXT,
-      status TEXT DEFAULT 'idle',
-      thread_values TEXT,
-      title TEXT
-    )
-  `)
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS runs (
-      run_id TEXT PRIMARY KEY,
-      thread_id TEXT REFERENCES threads(thread_id) ON DELETE CASCADE,
-      assistant_id TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      status TEXT,
-      metadata TEXT,
-      kwargs TEXT
-    )
-  `)
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS assistants (
-      assistant_id TEXT PRIMARY KEY,
-      graph_id TEXT NOT NULL,
-      name TEXT,
-      model TEXT DEFAULT 'claude-sonnet-4-5-20250929',
-      config TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `)
-
-  // Multi-agent support tables
-  db.run(`
-    CREATE TABLE IF NOT EXISTS agents (
-      agent_id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      color TEXT NOT NULL DEFAULT '#8B5CF6',
-      icon TEXT NOT NULL DEFAULT 'bot',
-      model_default TEXT DEFAULT 'claude-sonnet-4-5-20250929',
-      is_default INTEGER DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `)
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS agent_configs (
-      agent_id TEXT PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,
-      tool_configs TEXT,
-      mcp_servers TEXT,
-      custom_prompt TEXT,
-      learned_insights TEXT,
-      updated_at INTEGER NOT NULL
-    )
-  `)
-
-  // Add agent_id column to threads if it doesn't exist
-  // SQLite doesn't have IF NOT EXISTS for columns, so we check pragmatically
-  const threadColumns = db.exec("PRAGMA table_info(threads)")
-  const hasAgentId = threadColumns[0]?.values?.some((col) => col[1] === 'agent_id')
-  if (!hasAgentId) {
-    db.run(`ALTER TABLE threads ADD COLUMN agent_id TEXT REFERENCES agents(agent_id)`)
+  // Seed email allowlist with admin email if empty
+  const { data: allowlistSetting } = await sb
+    .from('system_settings')
+    .select('value')
+    .eq('key', 'allowed_emails')
+    .single()
+  if (!allowlistSetting) {
+    await sb.from('system_settings').upsert({
+      key: 'allowed_emails',
+      value: '["efpfefpf@gmail.com"]',
+      updated_at: Date.now()
+    }, { onConflict: 'key' })
   }
 
-  // Add user_id column to threads if it doesn't exist
-  const hasThreadUserId = threadColumns[0]?.values?.some((col) => col[1] === 'user_id')
-  if (!hasThreadUserId) {
-    db.run(`ALTER TABLE threads ADD COLUMN user_id TEXT REFERENCES users(user_id)`)
-  }
-
-  // Add e2b_sandbox_id column to threads if it doesn't exist
-  const hasE2bSandboxId = threadColumns[0]?.values?.some((col) => col[1] === 'e2b_sandbox_id')
-  if (!hasE2bSandboxId) {
-    db.run(`ALTER TABLE threads ADD COLUMN e2b_sandbox_id TEXT`)
-  }
-
-  // Add user_id column to agents if it doesn't exist
-  const agentColumns = db.exec("PRAGMA table_info(agents)")
-  const hasAgentUserId = agentColumns[0]?.values?.some((col) => col[1] === 'user_id')
-  if (!hasAgentUserId) {
-    db.run(`ALTER TABLE agents ADD COLUMN user_id TEXT REFERENCES users(user_id)`)
-  }
-
-  // Add e2b_sandbox_id column to agents if it doesn't exist
-  const hasAgentSandboxId = agentColumns[0]?.values?.some((col) => col[1] === 'e2b_sandbox_id')
-  if (!hasAgentSandboxId) {
-    db.run(`ALTER TABLE agents ADD COLUMN e2b_sandbox_id TEXT`)
-  }
-
-  // WhatsApp integration tables
-  db.run(`
-    CREATE TABLE IF NOT EXISTS whatsapp_auth_state (
-      key TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      data TEXT NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (key, user_id),
-      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-    )
-  `)
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS whatsapp_contacts (
-      jid TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      name TEXT,
-      push_name TEXT,
-      phone_number TEXT,
-      is_group INTEGER DEFAULT 0,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (jid, user_id),
-      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-    )
-  `)
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS whatsapp_chats (
-      jid TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      name TEXT,
-      is_group INTEGER DEFAULT 0,
-      last_message_time INTEGER,
-      unread_count INTEGER DEFAULT 0,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (jid, user_id),
-      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-    )
-  `)
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS whatsapp_messages (
-      message_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      chat_jid TEXT NOT NULL,
-      from_jid TEXT NOT NULL,
-      from_me INTEGER DEFAULT 0,
-      timestamp INTEGER NOT NULL,
-      message_type TEXT,
-      content TEXT,
-      raw_message TEXT,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (message_id, user_id),
-      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-    )
-  `)
-
-  // Legacy app_connections migration (if old table exists without user_id)
-  // Must run BEFORE creating new table or indexes
-  const appConnColumns = db.exec("PRAGMA table_info(app_connections)")
-  const hasAppConnUserId = appConnColumns[0]?.values?.some((col) => col[1] === 'user_id')
-  if (appConnColumns.length > 0 && !hasAppConnUserId) {
-    console.log('Migrating app_connections table to new schema...')
-    db.run(`DROP TABLE IF EXISTS app_connections`)
-  }
-
-  // Now create the table with correct schema (or it already exists with correct schema)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS app_connections (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      app_type TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'disconnected',
-      health_status TEXT DEFAULT 'unknown',
-      warning_message TEXT,
-      last_health_check_at TEXT,
-      last_successful_activity_at TEXT,
-      metadata TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(user_id, app_type),
-      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-    )
-  `)
-
-  // Health event log for debugging connection issues
-  db.run(`
-    CREATE TABLE IF NOT EXISTS app_health_events (
-      id TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL,
-      event_type TEXT NOT NULL,
-      details TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (connection_id) REFERENCES app_connections(id) ON DELETE CASCADE
-    )
-  `)
-
-  // Create indexes after tables are properly set up
-  db.run(`CREATE INDEX IF NOT EXISTS idx_app_connections_user ON app_connections(user_id)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_app_connections_user_type ON app_connections(user_id, app_type)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_app_health_events_connection ON app_health_events(connection_id)`)
-
-  // E2B sandbox file backups table (thread-based - deprecated, kept for migration)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS sandbox_file_backups (
-      thread_id TEXT PRIMARY KEY,
-      files TEXT NOT NULL,
-      file_count INTEGER DEFAULT 0,
-      total_size INTEGER DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      FOREIGN KEY (thread_id) REFERENCES threads(thread_id) ON DELETE CASCADE
-    )
-  `)
-
-  // Agent-based file backups table (new - each agent has its own sandbox)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS agent_file_backups (
-      agent_id TEXT PRIMARY KEY,
-      files TEXT NOT NULL,
-      file_count INTEGER DEFAULT 0,
-      total_size INTEGER DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE
-    )
-  `)
-
-  db.run(`CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_threads_agent_id ON threads(agent_id)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_threads_user_id ON threads(user_id)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_agents_user_id ON agents(user_id)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_runs_thread_id ON runs(thread_id)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_chat ON whatsapp_messages(chat_jid, user_id)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_timestamp ON whatsapp_messages(timestamp)`)
-
-  // WhatsApp Agent Configuration table (per user)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS whatsapp_agent_config (
-      user_id TEXT PRIMARY KEY,
-      enabled INTEGER DEFAULT 0,
-      agent_id TEXT,
-      thread_timeout_minutes INTEGER DEFAULT 30,
-      workspace_path TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
-      FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE SET NULL
-    )
-  `)
-
-  // WhatsApp JID to Thread Mapping table
-  db.run(`
-    CREATE TABLE IF NOT EXISTS whatsapp_thread_mapping (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL,
-      jid TEXT NOT NULL,
-      thread_id TEXT NOT NULL,
-      last_activity_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL,
-      UNIQUE(user_id, jid),
-      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
-      FOREIGN KEY (thread_id) REFERENCES threads(thread_id) ON DELETE CASCADE
-    )
-  `)
-
-  db.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_thread_mapping_user_jid ON whatsapp_thread_mapping(user_id, jid)`)
-
-  // Add source column to threads for WhatsApp thread identification
-  const hasThreadSource = threadColumns[0]?.values?.some((col) => col[1] === 'source')
-  if (!hasThreadSource) {
-    db.run(`ALTER TABLE threads ADD COLUMN source TEXT DEFAULT 'chat'`)
-  }
-
-  // Add whatsapp_jid column to threads for linking back to WhatsApp contact
-  const hasWhatsappJid = threadColumns[0]?.values?.some((col) => col[1] === 'whatsapp_jid')
-  if (!hasWhatsappJid) {
-    db.run(`ALTER TABLE threads ADD COLUMN whatsapp_jid TEXT`)
-  }
-
-  // Add whatsapp_contact_name column to threads for display
-  const hasWhatsappContactName = threadColumns[0]?.values?.some((col) => col[1] === 'whatsapp_contact_name')
-  if (!hasWhatsappContactName) {
-    db.run(`ALTER TABLE threads ADD COLUMN whatsapp_contact_name TEXT`)
-  }
-
-  // Add needs_attention column to threads for sidebar indicator
-  const hasNeedsAttention = threadColumns[0]?.values?.some((col) => col[1] === 'needs_attention')
-  if (!hasNeedsAttention) {
-    db.run(`ALTER TABLE threads ADD COLUMN needs_attention INTEGER DEFAULT 0`)
-  }
-
-  // --- MIGRATIONS FOR WHATSAPP TABLES ---
-
-  // Check if we need to migrate whatsapp tables to include user_id
-  const waAuthColumns = db.exec("PRAGMA table_info(whatsapp_auth_state)")
-  const hasAuthUserId = waAuthColumns[0]?.values?.some((col) => col[1] === 'user_id')
-
-  // If tables exist but don't have user_id, we need to migrate them
-  // Strategy: Drop and recreate (DATA LOSS) as agreed in plan for clean multi-user slate
-  if (waAuthColumns.length > 0 && !hasAuthUserId) {
-    console.log('Migrating WhatsApp tables to multi-user schema (dropping existing data)...')
-    db.run(`DROP TABLE IF EXISTS whatsapp_auth_state`)
-    db.run(`DROP TABLE IF EXISTS whatsapp_contacts`)
-    db.run(`DROP TABLE IF EXISTS whatsapp_chats`)
-    db.run(`DROP TABLE IF EXISTS whatsapp_messages`)
-
-    // Re-run create statements
-    db.run(`
-      CREATE TABLE whatsapp_auth_state (
-        key TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        data TEXT NOT NULL,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY (key, user_id),
-        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE whatsapp_contacts (
-        jid TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        name TEXT,
-        push_name TEXT,
-        phone_number TEXT,
-        is_group INTEGER DEFAULT 0,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY (jid, user_id),
-        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE whatsapp_chats (
-        jid TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        name TEXT,
-        is_group INTEGER DEFAULT 0,
-        last_message_time INTEGER,
-        unread_count INTEGER DEFAULT 0,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY (jid, user_id),
-        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE whatsapp_messages (
-        message_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        chat_jid TEXT NOT NULL,
-        from_jid TEXT NOT NULL,
-        from_me INTEGER DEFAULT 0,
-        timestamp INTEGER NOT NULL,
-        message_type TEXT,
-        content TEXT,
-        raw_message TEXT,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (message_id, user_id),
-        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-      )
-    `)
-
-    db.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_chat ON whatsapp_messages(chat_jid, user_id)`)
-    db.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_timestamp ON whatsapp_messages(timestamp)`)
-  }
-
-  // Webhooks table for hook system
-  db.run(`
-    CREATE TABLE IF NOT EXISTS webhooks (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      url TEXT NOT NULL,
-      secret TEXT,
-      event_types TEXT NOT NULL,
-      enabled INTEGER DEFAULT 1,
-      retry_count INTEGER DEFAULT 3,
-      timeout_ms INTEGER DEFAULT 5000,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-    )
-  `)
-
-  db.run(`CREATE INDEX IF NOT EXISTS idx_webhooks_user ON webhooks(user_id)`)
-
-  saveToDisk()
-
-  // Run migrations (imported lazily to avoid circular deps)
+  // Run agent migrations (imported lazily to avoid circular deps)
   const { runAgentMigrations } = await import('./agents.js')
   await runAgentMigrations()
 
   console.log('Database initialized successfully')
-  return db
 }
 
+/**
+ * No-op for Supabase — persistence is automatic.
+ */
+export function saveToDisk(): void {
+  // No-op: Supabase persists automatically
+}
+
+/**
+ * No-op for Supabase.
+ */
+export async function flush(): Promise<void> {
+  // No-op: Supabase persists automatically
+}
+
+/**
+ * No-op for Supabase.
+ */
 export function closeDatabase(): void {
-  if (saveTimer) {
-    clearTimeout(saveTimer)
-    saveTimer = null
-  }
-  if (db) {
-    // Save any pending changes
-    if (dirty) {
-      const data = db.export()
-      writeFileSync(getDbPath(), Buffer.from(data))
-    }
-    db.close()
-    db = null
-  }
+  // No-op: Supabase client doesn't need explicit close
 }
 
-// Helper functions for common operations
+// ============================================
+// TypeScript Interfaces (unchanged from SQLite)
+// ============================================
 
 export interface User {
   user_id: string
   email: string
   password_hash: string
   name: string | null
+  tier_id: number
+  is_admin: number  // 0 or 1
+  created_at: number
+  updated_at: number
+}
+
+export interface UserTier {
+  tier_id: number
+  name: string
+  display_name: string
+  default_model: string
+  available_models: string  // JSON array
+  features: string          // JSON object
   created_at: number
   updated_at: number
 }
@@ -515,10 +129,13 @@ export interface Thread {
   agent_id: string | null
   user_id: string | null
   e2b_sandbox_id: string | null
-  source: string | null  // 'chat' | 'whatsapp'
+  source: string | null  // 'chat' | 'whatsapp' | 'cronjob' | 'slack'
   whatsapp_jid: string | null
   whatsapp_contact_name: string | null
-  needs_attention: number  // 0 or 1 (SQLite boolean)
+  slack_channel_id: string | null
+  slack_channel_name: string | null
+  needs_attention: number  // 0 or 1
+  search_text: string | null
 }
 
 export interface Agent {
@@ -527,7 +144,7 @@ export interface Agent {
   color: string
   icon: string
   model_default: string
-  is_default: number  // SQLite uses 0/1 for boolean
+  is_default: number  // 0 or 1
   user_id: string | null
   e2b_sandbox_id: string | null
   created_at: number
@@ -540,6 +157,20 @@ export interface AgentConfig {
   mcp_servers: string | null   // JSON
   custom_prompt: string | null
   learned_insights: string | null  // JSON
+  enabled_skills: string | null  // JSON array of skill_ids
+  updated_at: number
+}
+
+// Skills types
+export interface Skill {
+  skill_id: string
+  name: string
+  description: string | null
+  source_url: string
+  folder_path: string
+  file_count: number
+  user_id: string
+  created_at: number
   updated_at: number
 }
 
@@ -626,64 +257,121 @@ export interface WhatsAppThreadMapping {
   created_at: number
 }
 
-export function getAllThreads(): Thread[] {
-  const database = getDb()
-  const stmt = database.prepare('SELECT * FROM threads ORDER BY updated_at DESC')
-  const threads: Thread[] = []
-
-  while (stmt.step()) {
-    threads.push(stmt.getAsObject() as unknown as Thread)
-  }
-  stmt.free()
-
-  return threads
+// Slack Agent Configuration (per user)
+export interface SlackAgentConfig {
+  user_id: string
+  enabled: number  // 0 or 1
+  agent_id: string | null
+  poll_interval_seconds: number
+  thread_timeout_seconds: number
+  created_at: number
+  updated_at: number
 }
 
-export function getThread(threadId: string): Thread | null {
-  const database = getDb()
-  const stmt = database.prepare('SELECT * FROM threads WHERE thread_id = ?')
-  stmt.bind([threadId])
+// Slack Channel to Thread Mapping
+export interface SlackThreadMapping {
+  id: number
+  user_id: string
+  slack_channel_id: string
+  thread_id: string
+  last_processed_ts: string | null
+  last_activity_at: number
+  created_at: number
+  deleted: number  // 0 or 1
+}
 
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
+// Cronjob types
+export interface Cronjob {
+  cronjob_id: string
+  user_id: string
+  name: string
+  cron_expression: string
+  message: string
+  agent_id: string
+  thread_mode: 'new' | 'reuse'
+  thread_timeout_minutes: number
+  enabled: number  // 0 or 1
+  last_run_at: number | null
+  next_run_at: number | null
+  created_at: number
+  updated_at: number
+}
 
-  const thread = stmt.getAsObject() as unknown as Thread
-  stmt.free()
-  return thread
+export interface CronjobThreadMapping {
+  id: number
+  user_id: string
+  cronjob_id: string
+  thread_id: string
+  last_activity_at: number
+  created_at: number
+}
+
+// Per-agent tool configuration
+export interface AgentToolConfig {
+  id: number
+  agent_id: string
+  tool_id: string
+  enabled: number  // 0 or 1
+  require_approval: number  // 0 or 1
+  created_at: number
+  updated_at: number
+}
+
+// ============================================
+// Thread Functions
+// ============================================
+
+export async function getAllThreads(): Promise<Thread[]> {
+  const { data, error } = await getSupabase()
+    .from('threads')
+    .select('*')
+    .order('updated_at', { ascending: false })
+  if (error) throw new Error(`getAllThreads: ${error.message}`)
+  return (data || []) as unknown as Thread[]
+}
+
+export async function getThread(threadId: string): Promise<Thread | null> {
+  const { data, error } = await getSupabase()
+    .from('threads')
+    .select('*')
+    .eq('thread_id', threadId)
+    .single()
+  if (error || !data) return null
+  return data as unknown as Thread
 }
 
 export interface CreateThreadOptions {
   metadata?: Record<string, unknown>
   agentId?: string
   userId?: string
-  source?: 'chat' | 'whatsapp'
+  source?: 'chat' | 'whatsapp' | 'cronjob' | 'slack'
   whatsappJid?: string
   whatsappContactName?: string
+  slackChannelId?: string
+  slackChannelName?: string
 }
 
-export function createThread(threadId: string, options?: CreateThreadOptions): Thread
-export function createThread(threadId: string, metadata?: Record<string, unknown>, agentId?: string, userId?: string): Thread
-export function createThread(
+export async function createThread(threadId: string, options?: CreateThreadOptions): Promise<Thread>
+export async function createThread(threadId: string, metadata?: Record<string, unknown>, agentId?: string, userId?: string): Promise<Thread>
+export async function createThread(
   threadId: string,
   metadataOrOptions?: Record<string, unknown> | CreateThreadOptions,
   agentId?: string,
   userId?: string
-): Thread {
-  const database = getDb()
+): Promise<Thread> {
   const now = Date.now()
 
   // Handle both old signature (metadata, agentId, userId) and new signature (options object)
   let metadata: Record<string, unknown> | undefined
   let effectiveAgentId: string | undefined
   let effectiveUserId: string | undefined
-  let source: 'chat' | 'whatsapp' = 'chat'
+  let source: 'chat' | 'whatsapp' | 'cronjob' | 'slack' = 'chat'
   let whatsappJid: string | undefined
   let whatsappContactName: string | undefined
+  let slackChannelId: string | undefined
+  let slackChannelName: string | undefined
 
   if (metadataOrOptions && 'source' in metadataOrOptions) {
-    // New options object signature
     const opts = metadataOrOptions as CreateThreadOptions
     metadata = opts.metadata
     effectiveAgentId = opts.agentId
@@ -691,22 +379,15 @@ export function createThread(
     source = opts.source || 'chat'
     whatsappJid = opts.whatsappJid
     whatsappContactName = opts.whatsappContactName
+    slackChannelId = opts.slackChannelId
+    slackChannelName = opts.slackChannelName
   } else {
-    // Old signature for backward compatibility
     metadata = metadataOrOptions as Record<string, unknown> | undefined
     effectiveAgentId = agentId
     effectiveUserId = userId
   }
 
-  database.run(
-    `INSERT INTO threads (thread_id, created_at, updated_at, metadata, status, agent_id, user_id, source, whatsapp_jid, whatsapp_contact_name, needs_attention)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [threadId, now, now, metadata ? JSON.stringify(metadata) : null, 'idle', effectiveAgentId || null, effectiveUserId || null, source, whatsappJid || null, whatsappContactName || null, 0]
-  )
-
-  saveToDisk()
-
-  return {
+  const thread: Thread = {
     thread_id: threadId,
     created_at: now,
     updated_at: now,
@@ -720,94 +401,74 @@ export function createThread(
     source,
     whatsapp_jid: whatsappJid || null,
     whatsapp_contact_name: whatsappContactName || null,
-    needs_attention: 0
+    slack_channel_id: slackChannelId || null,
+    slack_channel_name: slackChannelName || null,
+    needs_attention: 0,
+    search_text: ''
   }
+
+  const { error } = await getSupabase().from('threads').insert(thread)
+  if (error) throw new Error(`createThread: ${error.message}`)
+
+  return thread
 }
 
-export function updateThread(
+export async function updateThread(
   threadId: string,
   updates: Partial<Omit<Thread, 'thread_id' | 'created_at'>>
-): Thread | null {
-  const database = getDb()
-  const existing = getThread(threadId)
-
+): Promise<Thread | null> {
+  const existing = await getThread(threadId)
   if (!existing) return null
 
   const now = Date.now()
-  const setClauses: string[] = ['updated_at = ?']
-  const values: (string | number | null)[] = [now]
+  const row: Record<string, unknown> = { updated_at: now }
 
   if (updates.metadata !== undefined) {
-    setClauses.push('metadata = ?')
-    values.push(
-      typeof updates.metadata === 'string' ? updates.metadata : JSON.stringify(updates.metadata)
-    )
+    row.metadata = typeof updates.metadata === 'string' ? updates.metadata : JSON.stringify(updates.metadata)
   }
-  if (updates.status !== undefined) {
-    setClauses.push('status = ?')
-    values.push(updates.status)
-  }
-  if (updates.thread_values !== undefined) {
-    setClauses.push('thread_values = ?')
-    values.push(updates.thread_values)
-  }
-  if (updates.title !== undefined) {
-    setClauses.push('title = ?')
-    values.push(updates.title)
-  }
-  if (updates.agent_id !== undefined) {
-    setClauses.push('agent_id = ?')
-    values.push(updates.agent_id)
-  }
-  if (updates.e2b_sandbox_id !== undefined) {
-    setClauses.push('e2b_sandbox_id = ?')
-    values.push(updates.e2b_sandbox_id)
-  }
-  if (updates.source !== undefined) {
-    setClauses.push('source = ?')
-    values.push(updates.source)
-  }
-  if (updates.whatsapp_jid !== undefined) {
-    setClauses.push('whatsapp_jid = ?')
-    values.push(updates.whatsapp_jid)
-  }
-  if (updates.whatsapp_contact_name !== undefined) {
-    setClauses.push('whatsapp_contact_name = ?')
-    values.push(updates.whatsapp_contact_name)
-  }
-  if (updates.needs_attention !== undefined) {
-    setClauses.push('needs_attention = ?')
-    values.push(updates.needs_attention)
-  }
+  if (updates.status !== undefined) row.status = updates.status
+  if (updates.thread_values !== undefined) row.thread_values = updates.thread_values
+  if (updates.title !== undefined) row.title = updates.title
+  if (updates.agent_id !== undefined) row.agent_id = updates.agent_id
+  if (updates.e2b_sandbox_id !== undefined) row.e2b_sandbox_id = updates.e2b_sandbox_id
+  if (updates.source !== undefined) row.source = updates.source
+  if (updates.whatsapp_jid !== undefined) row.whatsapp_jid = updates.whatsapp_jid
+  if (updates.whatsapp_contact_name !== undefined) row.whatsapp_contact_name = updates.whatsapp_contact_name
+  if (updates.slack_channel_id !== undefined) row.slack_channel_id = updates.slack_channel_id
+  if (updates.slack_channel_name !== undefined) row.slack_channel_name = updates.slack_channel_name
+  if (updates.needs_attention !== undefined) row.needs_attention = updates.needs_attention
+  if (updates.search_text !== undefined) row.search_text = updates.search_text
 
-  values.push(threadId)
-
-  database.run(`UPDATE threads SET ${setClauses.join(', ')} WHERE thread_id = ?`, values)
-
-  saveToDisk()
+  const { error } = await getSupabase()
+    .from('threads')
+    .update(row)
+    .eq('thread_id', threadId)
+  if (error) throw new Error(`updateThread: ${error.message}`)
 
   return getThread(threadId)
 }
 
-export function deleteThread(threadId: string): void {
-  const database = getDb()
-  database.run('DELETE FROM threads WHERE thread_id = ?', [threadId])
-  saveToDisk()
+export async function deleteThread(threadId: string): Promise<void> {
+  // Also clean up checkpoints for this thread
+  await getSupabase().from('checkpoint_writes').delete().eq('thread_id', threadId)
+  await getSupabase().from('checkpoint_blobs').delete().eq('thread_id', threadId)
+  await getSupabase().from('checkpoints').delete().eq('thread_id', threadId)
+
+  const { error } = await getSupabase()
+    .from('threads')
+    .delete()
+    .eq('thread_id', threadId)
+  if (error) throw new Error(`deleteThread: ${error.message}`)
 }
 
-// Get threads filtered by user_id
-export function getThreadsByUserId(userId: string): Thread[] {
-  const database = getDb()
-  const stmt = database.prepare('SELECT * FROM threads WHERE user_id = ? ORDER BY updated_at DESC')
-  stmt.bind([userId])
-  const threads: Thread[] = []
-
-  while (stmt.step()) {
-    threads.push(stmt.getAsObject() as unknown as Thread)
-  }
-  stmt.free()
-
-  return threads
+export async function getThreadsByUserId(userId: string): Promise<Thread[]> {
+  const { data, error } = await getSupabase()
+    .from('threads')
+    .select('*')
+    .eq('user_id', userId)
+    .order('updated_at', { ascending: false })
+  if (error) throw new Error(`getThreadsByUserId: ${error.message}`)
+  return (data || []) as unknown as Thread[]
 }
 
 // ============================================
@@ -832,83 +493,60 @@ export interface BackupInfo {
 export interface BackedUpFile {
   path: string
   content: string
+  encoding?: 'utf8' | 'base64'
 }
 
-/**
- * Save or update a file backup for a thread.
- */
-export function saveFileBackup(threadId: string, files: BackedUpFile[]): void {
-  const database = getDb()
+export async function saveFileBackup(threadId: string, files: BackedUpFile[]): Promise<void> {
   const now = Date.now()
   const filesJson = JSON.stringify(files)
   const totalSize = files.reduce((sum, f) => sum + f.content.length, 0)
 
-  // Use INSERT OR REPLACE to handle both insert and update
-  database.run(
-    `INSERT OR REPLACE INTO sandbox_file_backups
-     (thread_id, files, file_count, total_size, created_at, updated_at)
-     VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM sandbox_file_backups WHERE thread_id = ?), ?), ?)`,
-    [threadId, filesJson, files.length, totalSize, threadId, now, now]
-  )
-
-  saveToDisk()
+  const { error } = await getSupabase()
+    .from('sandbox_file_backups')
+    .upsert({
+      thread_id: threadId,
+      files: filesJson,
+      file_count: files.length,
+      total_size: totalSize,
+      created_at: now,
+      updated_at: now
+    }, { onConflict: 'thread_id' })
+  if (error) throw new Error(`saveFileBackup: ${error.message}`)
 }
 
-/**
- * Get the file backup for a thread.
- */
-export function getFileBackup(threadId: string): BackedUpFile[] | null {
-  const database = getDb()
-  const stmt = database.prepare('SELECT files FROM sandbox_file_backups WHERE thread_id = ?')
-  stmt.bind([threadId])
-
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const row = stmt.getAsObject() as { files: string }
-  stmt.free()
-
+export async function getFileBackup(threadId: string): Promise<BackedUpFile[] | null> {
+  const { data, error } = await getSupabase()
+    .from('sandbox_file_backups')
+    .select('files')
+    .eq('thread_id', threadId)
+    .single()
+  if (error || !data) return null
   try {
-    return JSON.parse(row.files) as BackedUpFile[]
+    return JSON.parse(data.files) as BackedUpFile[]
   } catch {
     return null
   }
 }
 
-/**
- * Get backup info (metadata only) for a thread.
- */
-export function getBackupInfo(threadId: string): BackupInfo | null {
-  const database = getDb()
-  const stmt = database.prepare(
-    'SELECT file_count, total_size, updated_at FROM sandbox_file_backups WHERE thread_id = ?'
-  )
-  stmt.bind([threadId])
-
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const row = stmt.getAsObject() as { file_count: number; total_size: number; updated_at: number }
-  stmt.free()
-
+export async function getBackupInfo(threadId: string): Promise<BackupInfo | null> {
+  const { data, error } = await getSupabase()
+    .from('sandbox_file_backups')
+    .select('file_count, total_size, updated_at')
+    .eq('thread_id', threadId)
+    .single()
+  if (error || !data) return null
   return {
-    fileCount: row.file_count,
-    totalSize: row.total_size,
-    updatedAt: row.updated_at
+    fileCount: data.file_count,
+    totalSize: data.total_size,
+    updatedAt: data.updated_at
   }
 }
 
-/**
- * Clear the file backup for a thread.
- */
-export function clearFileBackup(threadId: string): void {
-  const database = getDb()
-  database.run('DELETE FROM sandbox_file_backups WHERE thread_id = ?', [threadId])
-  saveToDisk()
+export async function clearFileBackup(threadId: string): Promise<void> {
+  await getSupabase()
+    .from('sandbox_file_backups')
+    .delete()
+    .eq('thread_id', threadId)
 }
 
 // ============================================
@@ -924,188 +562,157 @@ export interface AgentFileBackup {
   updated_at: number
 }
 
-/**
- * Save or update a file backup for an agent's sandbox.
- */
-export function saveAgentFileBackup(agentId: string, files: BackedUpFile[]): void {
-  const database = getDb()
+export async function saveAgentFileBackup(agentId: string, files: BackedUpFile[]): Promise<void> {
   const now = Date.now()
   const filesJson = JSON.stringify(files)
   const totalSize = files.reduce((sum, f) => sum + f.content.length, 0)
 
-  // Use INSERT OR REPLACE to handle both insert and update
-  database.run(
-    `INSERT OR REPLACE INTO agent_file_backups
-     (agent_id, files, file_count, total_size, created_at, updated_at)
-     VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM agent_file_backups WHERE agent_id = ?), ?), ?)`,
-    [agentId, filesJson, files.length, totalSize, agentId, now, now]
-  )
-
-  saveToDisk()
+  const { error } = await getSupabase()
+    .from('agent_file_backups')
+    .upsert({
+      agent_id: agentId,
+      files: filesJson,
+      file_count: files.length,
+      total_size: totalSize,
+      created_at: now,
+      updated_at: now
+    }, { onConflict: 'agent_id' })
+  if (error) throw new Error(`saveAgentFileBackup: ${error.message}`)
 }
 
-/**
- * Get the file backup for an agent's sandbox.
- */
-export function getAgentFileBackup(agentId: string): BackedUpFile[] | null {
-  const database = getDb()
-  const stmt = database.prepare('SELECT files FROM agent_file_backups WHERE agent_id = ?')
-  stmt.bind([agentId])
-
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const row = stmt.getAsObject() as { files: string }
-  stmt.free()
-
+export async function getAgentFileBackup(agentId: string): Promise<BackedUpFile[] | null> {
+  const { data, error } = await getSupabase()
+    .from('agent_file_backups')
+    .select('files')
+    .eq('agent_id', agentId)
+    .single()
+  if (error || !data) return null
   try {
-    return JSON.parse(row.files) as BackedUpFile[]
+    return JSON.parse(data.files) as BackedUpFile[]
   } catch {
     return null
   }
 }
 
-/**
- * Get backup info (metadata only) for an agent's sandbox.
- */
-export function getAgentBackupInfo(agentId: string): BackupInfo | null {
-  const database = getDb()
-  const stmt = database.prepare(
-    'SELECT file_count, total_size, updated_at FROM agent_file_backups WHERE agent_id = ?'
-  )
-  stmt.bind([agentId])
-
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const row = stmt.getAsObject() as { file_count: number; total_size: number; updated_at: number }
-  stmt.free()
-
+export async function getAgentBackupInfo(agentId: string): Promise<BackupInfo | null> {
+  const { data, error } = await getSupabase()
+    .from('agent_file_backups')
+    .select('file_count, total_size, updated_at')
+    .eq('agent_id', agentId)
+    .single()
+  if (error || !data) return null
   return {
-    fileCount: row.file_count,
-    totalSize: row.total_size,
-    updatedAt: row.updated_at
+    fileCount: data.file_count,
+    totalSize: data.total_size,
+    updatedAt: data.updated_at
   }
 }
 
-/**
- * Clear the file backup for an agent's sandbox.
- */
-export function clearAgentFileBackup(agentId: string): void {
-  const database = getDb()
-  database.run('DELETE FROM agent_file_backups WHERE agent_id = ?', [agentId])
-  saveToDisk()
+export async function clearAgentFileBackup(agentId: string): Promise<void> {
+  await getSupabase()
+    .from('agent_file_backups')
+    .delete()
+    .eq('agent_id', agentId)
 }
 
-/**
- * Update an agent's e2b_sandbox_id.
- */
-export function updateAgentSandboxId(agentId: string, sandboxId: string | null): void {
-  const database = getDb()
+export async function updateAgentSandboxId(agentId: string, sandboxId: string | null): Promise<void> {
   const now = Date.now()
-  database.run(
-    'UPDATE agents SET e2b_sandbox_id = ?, updated_at = ? WHERE agent_id = ?',
-    [sandboxId, now, agentId]
-  )
-  saveToDisk()
+  const { error } = await getSupabase()
+    .from('agents')
+    .update({ e2b_sandbox_id: sandboxId, updated_at: now })
+    .eq('agent_id', agentId)
+  if (error) throw new Error(`updateAgentSandboxId: ${error.message}`)
 }
 
 // ============================================
 // Single-File Backup Operations
 // ============================================
 
-/**
- * Get a single file from an agent's backup by path.
- */
-export function getAgentFileByPath(agentId: string, filePath: string): BackedUpFile | null {
-  const backup = getAgentFileBackup(agentId)
+export async function getAgentFileByPath(agentId: string, filePath: string): Promise<BackedUpFile | null> {
+  const backup = await getAgentFileBackup(agentId)
   if (!backup) return null
-
   return backup.find(f => f.path === filePath) || null
 }
 
-/**
- * Save or update a single file in an agent's backup.
- */
-export function saveAgentFile(agentId: string, path: string, content: string): void {
-  const database = getDb()
+export async function saveAgentFile(agentId: string, path: string, content: string, encoding?: 'utf8' | 'base64'): Promise<void> {
   const now = Date.now()
+  const existingBackup = await getAgentFileBackup(agentId) || []
 
-  // Get existing backup or create empty array
-  const existingBackup = getAgentFileBackup(agentId) || []
-
-  // Find and update or add the file
   const existingIndex = existingBackup.findIndex(f => f.path === path)
+  const fileEntry: BackedUpFile = encoding === 'base64' ? { path, content, encoding } : { path, content }
   if (existingIndex >= 0) {
-    existingBackup[existingIndex] = { path, content }
+    existingBackup[existingIndex] = fileEntry
   } else {
-    existingBackup.push({ path, content })
+    existingBackup.push(fileEntry)
   }
 
-  // Calculate totals
   const filesJson = JSON.stringify(existingBackup)
   const totalSize = existingBackup.reduce((sum, f) => sum + f.content.length, 0)
 
-  // Save back to database
-  database.run(
-    `INSERT OR REPLACE INTO agent_file_backups
-     (agent_id, files, file_count, total_size, created_at, updated_at)
-     VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM agent_file_backups WHERE agent_id = ?), ?), ?)`,
-    [agentId, filesJson, existingBackup.length, totalSize, agentId, now, now]
-  )
-
-  saveToDisk()
+  const { error } = await getSupabase()
+    .from('agent_file_backups')
+    .upsert({
+      agent_id: agentId,
+      files: filesJson,
+      file_count: existingBackup.length,
+      total_size: totalSize,
+      created_at: now,
+      updated_at: now
+    }, { onConflict: 'agent_id' })
+  if (error) throw new Error(`saveAgentFile: ${error.message}`)
 }
 
-/**
- * Delete a single file from an agent's backup.
- * Returns true if the file was found and deleted, false otherwise.
- */
-export function deleteAgentFile(agentId: string, path: string): boolean {
-  const database = getDb()
+export async function deleteAgentFile(agentId: string, path: string): Promise<boolean> {
   const now = Date.now()
-
-  // Get existing backup
-  const existingBackup = getAgentFileBackup(agentId)
+  const existingBackup = await getAgentFileBackup(agentId)
   if (!existingBackup) return false
 
-  // Find and remove the file
   const existingIndex = existingBackup.findIndex(f => f.path === path)
   if (existingIndex < 0) return false
 
   existingBackup.splice(existingIndex, 1)
 
-  // Calculate totals
   const filesJson = JSON.stringify(existingBackup)
   const totalSize = existingBackup.reduce((sum, f) => sum + f.content.length, 0)
 
-  // Save back to database
-  database.run(
-    `UPDATE agent_file_backups SET files = ?, file_count = ?, total_size = ?, updated_at = ? WHERE agent_id = ?`,
-    [filesJson, existingBackup.length, totalSize, now, agentId]
-  )
+  await getSupabase()
+    .from('agent_file_backups')
+    .update({ files: filesJson, file_count: existingBackup.length, total_size: totalSize, updated_at: now })
+    .eq('agent_id', agentId)
 
-  saveToDisk()
   return true
 }
 
-/**
- * List files from an agent's backup (path + size, no content).
- * Returns an array of file metadata without the actual content.
- */
-export function listAgentBackupFiles(agentId: string): Array<{path: string, size: number, is_dir: boolean}> {
-  const backup = getAgentFileBackup(agentId)
+export async function deleteAgentFilesInFolder(agentId: string, folderPath: string): Promise<number> {
+  const now = Date.now()
+  const existingBackup = await getAgentFileBackup(agentId)
+  if (!existingBackup || existingBackup.length === 0) return 0
+
+  const normalizedFolder = folderPath.endsWith('/') ? folderPath : folderPath + '/'
+  const originalLength = existingBackup.length
+  const remainingFiles = existingBackup.filter(f => !f.path.startsWith(normalizedFolder))
+  const deletedCount = originalLength - remainingFiles.length
+
+  if (deletedCount === 0) return 0
+
+  const filesJson = JSON.stringify(remainingFiles)
+  const totalSize = remainingFiles.reduce((sum, f) => sum + f.content.length, 0)
+
+  await getSupabase()
+    .from('agent_file_backups')
+    .update({ files: filesJson, file_count: remainingFiles.length, total_size: totalSize, updated_at: now })
+    .eq('agent_id', agentId)
+
+  return deletedCount
+}
+
+export async function listAgentBackupFiles(agentId: string): Promise<Array<{path: string, size: number, is_dir: boolean}>> {
+  const backup = await getAgentFileBackup(agentId)
   if (!backup) return []
 
-  // Build a set of directories from file paths
   const directories = new Set<string>()
 
   for (const file of backup) {
-    // Extract all parent directories from the path
     const parts = file.path.split('/')
     let currentPath = ''
     for (let i = 0; i < parts.length - 1; i++) {
@@ -1116,26 +723,18 @@ export function listAgentBackupFiles(agentId: string): Array<{path: string, size
     }
   }
 
-  // Create file entries
   const files = backup.map(f => ({
     path: f.path,
     size: f.content.length,
     is_dir: false
   }))
 
-  // Add directory entries
   for (const dir of directories) {
-    // Don't add if there's already a file with this path (shouldn't happen, but just in case)
     if (!backup.some(f => f.path === dir)) {
-      files.push({
-        path: dir,
-        size: 0,
-        is_dir: true
-      })
+      files.push({ path: dir, size: 0, is_dir: true })
     }
   }
 
-  // Sort: directories first, then by path
   files.sort((a, b) => {
     if (a.is_dir && !b.is_dir) return -1
     if (!a.is_dir && b.is_dir) return 1
@@ -1149,10 +748,80 @@ export function listAgentBackupFiles(agentId: string): Array<{path: string, size
 // Thread Attention Functions
 // ============================================
 
-/**
- * Set the needs_attention flag for a thread.
- * Returns the updated thread or null if not found.
- */
-export function setThreadNeedsAttention(threadId: string, needsAttention: boolean): Thread | null {
+export async function setThreadNeedsAttention(threadId: string, needsAttention: boolean): Promise<Thread | null> {
   return updateThread(threadId, { needs_attention: needsAttention ? 1 : 0 })
+}
+
+// ============================================
+// Thread Search Functions
+// ============================================
+
+export const SEARCH_THREAD_LIMIT = 100
+
+export interface SearchThreadsResult {
+  threads: Thread[]
+  totalThreads: number
+  limitApplied: boolean
+}
+
+export async function getThreadCountForUser(userId: string): Promise<number> {
+  const { count, error } = await getSupabase()
+    .from('threads')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', userId)
+  if (error) return 0
+  return count || 0
+}
+
+export async function searchThreads(
+  userId: string,
+  query: string,
+  source?: string
+): Promise<SearchThreadsResult> {
+  const totalThreads = await getThreadCountForUser(userId)
+  const limitApplied = totalThreads > SEARCH_THREAD_LIMIT
+
+  const searchPattern = `%${query}%`
+
+  let qb = getSupabase()
+    .from('threads')
+    .select('*')
+    .eq('user_id', userId)
+    .or(`title.ilike.${searchPattern},search_text.ilike.${searchPattern}`)
+
+  if (source && source !== 'all') {
+    qb = qb.eq('source', source)
+  }
+
+  const { data, error } = await qb
+    .order('updated_at', { ascending: false })
+    .limit(SEARCH_THREAD_LIMIT)
+
+  if (error) throw new Error(`searchThreads: ${error.message}`)
+
+  return {
+    threads: (data || []) as unknown as Thread[],
+    totalThreads,
+    limitApplied
+  }
+}
+
+export async function updateThreadSearchText(threadId: string, content: string): Promise<void> {
+  const now = Date.now()
+  const truncated = content.substring(0, 2000)
+
+  await getSupabase()
+    .from('threads')
+    .update({ search_text: truncated, updated_at: now })
+    .eq('thread_id', threadId)
+}
+
+export async function appendThreadSearchText(threadId: string, newContent: string): Promise<void> {
+  const thread = await getThread(threadId)
+  if (!thread) return
+
+  const existingText = thread.search_text || thread.title || ''
+  const combined = (existingText + ' ' + newContent).substring(0, 2000)
+
+  await updateThreadSearchText(threadId, combined)
 }

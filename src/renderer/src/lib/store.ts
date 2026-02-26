@@ -86,15 +86,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     }))
     set({ agents })
 
-    // Set active agent to default if none selected
+    // Set active agent: restore from localStorage, then fallback to default
     if (!get().activeAgentId && agents.length > 0) {
-      const defaultAgent = agents.find((a) => a.is_default) || agents[0]
+      const savedAgentId = localStorage.getItem('activeAgentId')
+      const savedAgent = savedAgentId ? agents.find((a) => a.agent_id === savedAgentId) : null
+      const defaultAgent = savedAgent || agents.find((a) => a.is_default) || agents[0]
       set({ activeAgentId: defaultAgent.agent_id })
     }
   },
 
   setActiveAgent: (agentId: string) => {
     set({ activeAgentId: agentId })
+    localStorage.setItem('activeAgentId', agentId)
   },
 
   createAgent: async (input) => {
@@ -109,6 +112,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       agents: [...state.agents, agent],
       activeAgentId: agent.agent_id, // Switch to newly created agent
     }))
+    localStorage.setItem('activeAgentId', agent.agent_id)
     return agent
   },
 
@@ -130,6 +134,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   deleteAgent: async (agentId) => {
     const result = await window.api.agents.delete(agentId)
     if (result.success) {
+      const wasActive = get().activeAgentId === agentId
       set((state) => {
         const agents = state.agents.filter((a) => a.agent_id !== agentId)
         // If deleted agent was active, switch to default
@@ -139,6 +144,15 @@ export const useAppStore = create<AppState>((set, get) => ({
             : state.activeAgentId
         return { agents, activeAgentId: newActiveId }
       })
+      // Persist new active agent if it changed
+      if (wasActive) {
+        const newActiveId = get().activeAgentId
+        if (newActiveId) {
+          localStorage.setItem('activeAgentId', newActiveId)
+        } else {
+          localStorage.removeItem('activeAgentId')
+        }
+      }
       // Reload threads to update agent assignments
       await get().loadThreads()
     }
@@ -159,8 +173,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ threads })
 
     // Select first thread if none selected
+    // Note: Don't call selectThread here - we want to keep the localStorage-restored agent
+    // selectThread syncs agent with thread, which would override the persisted selection
     if (!get().currentThreadId && threads.length > 0) {
-      await get().selectThread(threads[0].thread_id)
+      set({ currentThreadId: threads[0].thread_id })
     }
   },
 
@@ -178,6 +194,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectThread: async (threadId: string) => {
     // Just update currentThreadId - ThreadContext handles per-thread state
     set({ currentThreadId: threadId })
+
+    // Sync activeAgentId with thread's agent
+    const thread = get().threads.find((t) => t.thread_id === threadId)
+    if (thread?.agent_id) {
+      set({ activeAgentId: thread.agent_id })
+      localStorage.setItem('activeAgentId', thread.agent_id)
+    }
   },
 
   deleteThread: async (threadId: string) => {

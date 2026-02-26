@@ -6,14 +6,16 @@ import {
   createThread as dbCreateThread,
   updateThread as dbUpdateThread,
   deleteThread as dbDeleteThread,
-  getThreadsByUserId
+  getThreadsByUserId,
+  searchThreads,
+  SEARCH_THREAD_LIMIT
 } from '../services/db/index.js'
 import { getAgent, getDefaultAgent, getAgentsByUserId, getDefaultAgentForUser } from '../services/db/agents.js'
 import { getCheckpointer, closeCheckpointer } from '../services/agent/runtime.js'
-import { deleteThreadCheckpoint } from '../services/storage.js'
 import { generateTitle } from '../services/misc/title-generator.js'
 import { requireAuth } from '../middleware/auth.js'
 import type { Thread } from '../services/types.js'
+import { markSlackThreadMappingDeleted } from '../services/apps/slack/config-store.js'
 
 const router = Router()
 
@@ -24,7 +26,7 @@ router.use(requireAuth)
 router.get('/', async (req, res) => {
   try {
     const userId = req.user!.userId
-    const threads = getThreadsByUserId(userId)
+    const threads = await getThreadsByUserId(userId)
     const result = threads.map((row) => ({
       thread_id: row.thread_id,
       created_at: new Date(row.created_at),
@@ -48,11 +50,59 @@ router.get('/', async (req, res) => {
   }
 })
 
+// Search threads by title and content
+// GET /threads/search?q=<query>&source=<source>
+// Returns threads matching the query, limited to most recent SEARCH_THREAD_LIMIT threads
+router.get('/search', async (req, res) => {
+  try {
+    const userId = req.user!.userId
+    const query = req.query.q as string
+    const source = req.query.source as string | undefined
+
+    // Require minimum query length
+    if (!query || query.length < 2) {
+      res.json({ threads: [], totalThreads: 0, limitApplied: false })
+      return
+    }
+
+    // Search threads
+    const result = await searchThreads(userId, query, source)
+
+    // Map threads to API format
+    const threads = result.threads.map((row) => ({
+      thread_id: row.thread_id,
+      created_at: new Date(row.created_at),
+      updated_at: new Date(row.updated_at),
+      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+      status: row.status as Thread['status'],
+      thread_values: row.thread_values ? JSON.parse(row.thread_values) : undefined,
+      title: row.title,
+      agent_id: row.agent_id,
+      user_id: row.user_id,
+      e2b_sandbox_id: row.e2b_sandbox_id,
+      source: row.source || 'chat',
+      whatsapp_jid: row.whatsapp_jid || null,
+      whatsapp_contact_name: row.whatsapp_contact_name || null,
+      needs_attention: Boolean(row.needs_attention)
+    }))
+
+    res.json({
+      threads,
+      totalThreads: result.totalThreads,
+      limitApplied: result.limitApplied,
+      searchLimit: SEARCH_THREAD_LIMIT
+    })
+  } catch (error) {
+    console.error('[Threads] Search error:', error)
+    res.status(500).json({ error: 'Failed to search threads' })
+  }
+})
+
 // Get a single thread
 router.get('/:threadId', async (req, res) => {
   try {
     const userId = req.user!.userId
-    const row = getThread(req.params.threadId)
+    const row = await getThread(req.params.threadId)
     if (!row) {
       res.status(404).json({ error: 'Thread not found' })
       return
@@ -93,18 +143,18 @@ router.post('/', async (req, res) => {
     const title = (metadata?.title as string) || `Thread ${new Date().toLocaleDateString()}`
 
     // Get the agent (must belong to user)
-    let agent = agentId ? getAgent(agentId) : null
+    let agent = agentId ? await getAgent(agentId) : null
     if (agent && agent.user_id !== userId) {
       res.status(403).json({ error: 'Cannot create thread with agent from another user' })
       return
     }
     if (!agent) {
       // Get user's default agent, or create one if none exists
-      agent = getDefaultAgentForUser(userId)
+      agent = await getDefaultAgentForUser(userId)
       if (!agent) {
         // Create a default agent for this user
         const { createAgent: createAgentFn } = await import('../services/db/agents.js')
-        agent = createAgentFn({
+        agent = await createAgentFn({
           name: 'BUDDY',
           color: '#8B5CF6',
           icon: 'bot',
@@ -120,7 +170,7 @@ router.post('/', async (req, res) => {
       title
     }
 
-    const thread = dbCreateThread(threadId, finalMetadata, agent?.agent_id, userId)
+    const thread = await dbCreateThread(threadId, finalMetadata, agent?.agent_id, userId)
 
     res.json({
       thread_id: thread.thread_id,
@@ -152,7 +202,7 @@ router.patch('/:threadId', async (req, res) => {
     const updates = req.body
 
     // Check ownership first
-    const existing = getThread(threadId)
+    const existing = await getThread(threadId)
     if (!existing) {
       res.status(404).json({ error: 'Thread not found' })
       return
@@ -172,7 +222,7 @@ router.patch('/:threadId', async (req, res) => {
     if (updates.e2b_sandbox_id !== undefined) updateData.e2b_sandbox_id = updates.e2b_sandbox_id
     if (updates.needs_attention !== undefined) updateData.needs_attention = updates.needs_attention ? 1 : 0
 
-    const row = dbUpdateThread(threadId, updateData)
+    const row = await dbUpdateThread(threadId, updateData)
     if (!row) {
       res.status(404).json({ error: 'Thread not found' })
       return
@@ -208,7 +258,7 @@ router.delete('/:threadId', async (req, res) => {
     console.log('[Threads] Deleting thread:', threadId)
 
     // Check ownership first
-    const existing = getThread(threadId)
+    const existing = await getThread(threadId)
     if (!existing) {
       res.status(404).json({ error: 'Thread not found' })
       return
@@ -219,23 +269,24 @@ router.delete('/:threadId', async (req, res) => {
     }
 
     // Delete from our metadata store
-    dbDeleteThread(threadId)
+    await dbDeleteThread(threadId)
     console.log('[Threads] Deleted from metadata store')
 
-    // Close any open checkpointer for this thread
+    // Delete thread checkpoints from Postgres
     try {
-      await closeCheckpointer(threadId)
-      console.log('[Threads] Closed checkpointer')
+      const checkpointer = await getCheckpointer(threadId)
+      await checkpointer.deleteThread(threadId)
+      console.log('[Threads] Deleted checkpoint data')
     } catch (e) {
-      console.warn('[Threads] Failed to close checkpointer:', e)
+      console.warn('[Threads] Failed to delete checkpoint data:', e)
     }
 
-    // Delete the thread's checkpoint file
+    // Mark any Slack thread mapping as deleted (so no more messages are received)
     try {
-      deleteThreadCheckpoint(threadId)
-      console.log('[Threads] Deleted checkpoint file')
+      await markSlackThreadMappingDeleted(threadId)
+      console.log('[Threads] Marked Slack mapping as deleted')
     } catch (e) {
-      console.warn('[Threads] Failed to delete checkpoint file:', e)
+      console.warn('[Threads] Failed to mark Slack mapping as deleted:', e)
     }
 
     res.status(204).send()
@@ -252,7 +303,7 @@ router.get('/:threadId/history', async (req, res) => {
     const { threadId } = req.params
 
     // Check ownership
-    const existing = getThread(threadId)
+    const existing = await getThread(threadId)
     if (!existing) {
       res.status(404).json({ error: 'Thread not found' })
       return
@@ -318,7 +369,7 @@ router.get('/:threadId/state', async (req, res) => {
     const { threadId } = req.params
 
     // Check ownership
-    const existing = getThread(threadId)
+    const existing = await getThread(threadId)
     if (!existing) {
       res.status(404).json({ error: 'Thread not found' })
       return

@@ -1,13 +1,16 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import { Loader2, AlertCircle, FileCode } from 'lucide-react'
 import { useCurrentThread } from '@/lib/thread-context'
 import { useAppStore } from '@/lib/store'
-import { getFileType, isBinaryFile } from '@/lib/file-types'
+import { getFileType, isBinaryFile, getPrettyRendererType } from '@/lib/file-types'
 import { CodeViewer } from './CodeViewer'
 import { ImageViewer } from './ImageViewer'
 import { MediaViewer } from './MediaViewer'
 import { PDFViewer } from './PDFViewer'
 import { BinaryFileViewer } from './BinaryFileViewer'
+import { MarkdownViewer } from './MarkdownViewer'
+import { CsvViewer } from './CsvViewer'
+import { HtmlPreviewViewer } from './HtmlPreviewViewer'
 
 interface FileViewerProps {
   filePath: string
@@ -21,6 +24,20 @@ export function FileViewer({ filePath, threadId }: FileViewerProps) {
   const [error, setError] = useState<string | null>(null)
   const [binaryContent, setBinaryContent] = useState<string | null>(null)
   const [sandboxEnabled, setSandboxEnabled] = useState(false)
+  const [sandboxConfig, setSandboxConfig] = useState<{ type: 'buddy' | 'local'; localHost: string; localPort: number } | null>(null)
+
+  // Load sandbox config on mount
+  useEffect(() => {
+    async function loadSandboxConfig() {
+      try {
+        const config = await window.api.sandbox.getConfig()
+        setSandboxConfig(config)
+      } catch (e) {
+        console.error('[FileViewer] Error loading sandbox config:', e)
+      }
+    }
+    loadSandboxConfig()
+  }, [])
 
   // Check sandbox status on mount
   useEffect(() => {
@@ -40,9 +57,28 @@ export function FileViewer({ filePath, threadId }: FileViewerProps) {
   const fileName = filePath.split('/').pop() || filePath
   const fileTypeInfo = useMemo(() => getFileType(fileName), [fileName])
   const isBinary = useMemo(() => isBinaryFile(fileName), [fileName])
+  const prettyType = useMemo(() => getPrettyRendererType(fileName), [fileName])
 
   // Get cached content or load it
   const content = fileContents[filePath]
+
+  // Save handler for pretty renderers
+  const handleSaveFile = useCallback(async (newContent: string) => {
+    if (sandboxConfig?.type === 'local') {
+      const workspace = activeAgentId ? `/home/user/${activeAgentId}` : '/home/user'
+      const baseUrl = `http://${sandboxConfig.localHost}:${sandboxConfig.localPort}`
+      const response = await fetch(`${baseUrl}/write`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: filePath, content: newContent, workspace })
+      })
+      const result = await response.json()
+      if (!result.success) throw new Error(result.error || 'Write failed')
+    } else if (activeAgentId) {
+      await window.api.workspace.backupWriteFile(activeAgentId, filePath, newContent)
+    }
+    setFileContents(filePath, newContent)
+  }, [sandboxConfig, activeAgentId, filePath, setFileContents])
 
   // Reset state when filePath changes
   useEffect(() => {
@@ -51,7 +87,7 @@ export function FileViewer({ filePath, threadId }: FileViewerProps) {
   }, [filePath])
 
   // Load file content (text or binary depending on file type)
-  // Uses backup-first approach: try backup first, then fallback to sandbox
+  // Uses backup-first approach for E2B, direct fetch for local Docker
   useEffect(() => {
     async function loadFile() {
       // Skip if already loaded
@@ -59,42 +95,108 @@ export function FileViewer({ filePath, threadId }: FileViewerProps) {
         return
       }
 
+      // Wait for sandbox config to load
+      if (!sandboxConfig) {
+        return
+      }
+
       setIsLoading(true)
       setError(null)
 
       try {
-        // Binary files - not supported in E2B/backup mode
+        let loaded = false
+
+        // Binary files: load as base64
         if (isBinary) {
-          setError('Binary file preview not yet supported')
+          if (sandboxConfig.type === 'local') {
+            try {
+              const workspace = activeAgentId ? `/home/user/${activeAgentId}` : '/home/user'
+              const baseUrl = `http://${sandboxConfig.localHost}:${sandboxConfig.localPort}`
+              const response = await fetch(`${baseUrl}/read`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: filePath, workspace, binary: true })
+              })
+              const result = await response.json()
+              if (result.success && result.content) {
+                setBinaryContent(result.content)
+                loaded = true
+              }
+            } catch (localErr) {
+              console.log('[FileViewer] Local Docker binary read failed:', localErr)
+            }
+          } else if (activeAgentId) {
+            try {
+              const backupResult = await window.api.workspace.backupReadFile(activeAgentId, filePath)
+              if (backupResult.success && backupResult.content !== undefined) {
+                if (backupResult.encoding === 'base64') {
+                  setBinaryContent(backupResult.content)
+                } else {
+                  setBinaryContent(btoa(backupResult.content))
+                }
+                loaded = true
+              }
+            } catch (backupErr) {
+              console.log('[FileViewer] Backup binary read failed:', backupErr)
+            }
+          }
+
+          if (!loaded) {
+            setError('Binary file could not be loaded')
+          }
           return
         }
 
-        // Text files - use backup-first approach
-        let loaded = false
-
-        // Step 1: Try backup first (always available, no sandbox needed)
-        if (activeAgentId) {
+        // Text files: load as utf-8
+        // LOCAL DOCKER MODE: Fetch directly from container
+        if (sandboxConfig.type === 'local') {
           try {
-            const backupResult = await window.api.workspace.backupReadFile(activeAgentId, filePath)
-            if (backupResult.success && backupResult.content !== undefined) {
-              setFileContents(filePath, backupResult.content)
+            const workspace = activeAgentId ? `/home/user/${activeAgentId}` : '/home/user'
+            const baseUrl = `http://${sandboxConfig.localHost}:${sandboxConfig.localPort}`
+            const response = await fetch(`${baseUrl}/read`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: filePath, workspace })
+            })
+            const result = await response.json()
+            if (result.success && result.content) {
+              // Remove line numbers from content (format is "1\tline content")
+              const fileContent = result.content
+                .split('\n')
+                .map((line: string) => line.replace(/^\d+\t/, ''))
+                .join('\n')
+              setFileContents(filePath, fileContent)
               loaded = true
             }
-          } catch (backupErr) {
-            console.log('[FileViewer] Backup read failed, will try sandbox:', backupErr)
+          } catch (localErr) {
+            console.log('[FileViewer] Local Docker read failed:', localErr)
           }
-        }
-
-        // Step 2: Fallback to sandbox if backup didn't have the file
-        if (!loaded && sandboxEnabled) {
-          try {
-            const sandboxResult = await window.api.workspace.sandboxReadFile(threadId, filePath)
-            if (sandboxResult.success && sandboxResult.content !== undefined) {
-              setFileContents(filePath, sandboxResult.content)
-              loaded = true
+        } else {
+          // E2B/BUDDY MODE: Use backup-first approach
+          // Step 1: Try backup first (always available, no sandbox needed)
+          if (activeAgentId) {
+            try {
+              const backupResult = await window.api.workspace.backupReadFile(activeAgentId, filePath)
+              if (backupResult.success && backupResult.content !== undefined) {
+                setFileContents(filePath, backupResult.content)
+                loaded = true
+              }
+            } catch (backupErr) {
+              console.log('[FileViewer] Backup read failed, will try sandbox:', backupErr)
             }
-          } catch (sandboxErr) {
-            console.log('[FileViewer] Sandbox read failed:', sandboxErr)
+          }
+
+          // Step 2: Fallback to sandbox if backup didn't have the file
+          if (!loaded && sandboxEnabled) {
+            try {
+              const sandboxResult = await window.api.workspace.sandboxReadFile(threadId, filePath)
+              if (sandboxResult.success && sandboxResult.content !== undefined) {
+                setFileContents(filePath, sandboxResult.content)
+                loaded = true
+              }
+            } catch (sandboxErr) {
+              console.log('[FileViewer] Sandbox read failed:', sandboxErr)
+            }
           }
         }
 
@@ -109,7 +211,7 @@ export function FileViewer({ filePath, threadId }: FileViewerProps) {
     }
 
     loadFile()
-  }, [threadId, filePath, content, binaryContent, setFileContents, isBinary, sandboxEnabled, activeAgentId])
+  }, [threadId, filePath, content, binaryContent, setFileContents, isBinary, sandboxEnabled, activeAgentId, sandboxConfig])
 
   if (isLoading) {
     return (
@@ -180,6 +282,17 @@ export function FileViewer({ filePath, threadId }: FileViewerProps) {
 
   if (fileTypeInfo.type === 'binary') {
     return <BinaryFileViewer filePath={filePath} size={undefined} />
+  }
+
+  // Pretty renderers for supported file types
+  if (content !== undefined && prettyType === 'markdown') {
+    return <MarkdownViewer filePath={filePath} content={content} onSave={handleSaveFile} />
+  }
+  if (content !== undefined && prettyType === 'csv') {
+    return <CsvViewer filePath={filePath} content={content} onSave={handleSaveFile} />
+  }
+  if (content !== undefined && prettyType === 'html') {
+    return <HtmlPreviewViewer filePath={filePath} content={content} onSave={handleSaveFile} />
   }
 
   // Default to code/text viewer

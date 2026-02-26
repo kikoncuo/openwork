@@ -9,8 +9,17 @@ import toolsRouter from './tools.js'
 import promptRouter from './prompt.js'
 import insightsRouter from './insights.js'
 import whatsappRouter from './whatsapp.js'
+import googleWorkspaceRouter from './google-workspace.js'
+import exaRouter from './exa.js'
+import slackRouter from './slack.js'
+import microsoftTeamsRouter from './microsoft-teams.js'
 import hooksRouter from './hooks.js'
 import connectionsRouter from './connections.js'
+import skillsRouter from './skills.js'
+import cronjobsRouter from './cronjobs.js'
+import sandboxRouter from './sandbox.js'
+import tiersRouter from './tiers.js'
+import adminRouter from './admin.js'
 
 export function registerRoutes(app: Express): void {
   // Health check
@@ -29,8 +38,17 @@ export function registerRoutes(app: Express): void {
   app.use('/api/prompt', promptRouter)
   app.use('/api/insights', insightsRouter)
   app.use('/api/whatsapp', whatsappRouter)
+  app.use('/api/google-workspace', googleWorkspaceRouter)
+  app.use('/api/exa', exaRouter)
+  app.use('/api/slack', slackRouter)
+  app.use('/api/microsoft-teams', microsoftTeamsRouter)
   app.use('/api/hooks', hooksRouter)
   app.use('/api/connections', connectionsRouter)
+  app.use('/api/skills', skillsRouter)
+  app.use('/api/cronjobs', cronjobsRouter)
+  app.use('/api/sandbox', sandboxRouter)
+  app.use('/api/user/tier', tiersRouter)
+  app.use('/api/admin', adminRouter)
 
   // Error handler
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {

@@ -3,6 +3,8 @@
  * Run with: npx tsx packages/server/src/services/hooks/__tests__/hooks.test.ts
  */
 
+export {}
+
 const BASE_URL = process.env.API_URL || 'http://localhost:3001'
 
 interface TestResult {

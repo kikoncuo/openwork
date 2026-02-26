@@ -5,7 +5,7 @@
 
 import { Router } from 'express'
 import { requireAuth } from '../middleware/auth.js'
-import { getThread, getAgentFileBackup, getAgentBackupInfo, clearAgentFileBackup, updateAgentSandboxId, getAgentFileByPath, saveAgentFile, deleteAgentFile, listAgentBackupFiles } from '../services/db/index.js'
+import { getThread, getAgentFileBackup, getAgentBackupInfo, clearAgentFileBackup, updateAgentSandboxId, getAgentFileByPath, saveAgentFile, deleteAgentFile, deleteAgentFilesInFolder, listAgentBackupFiles } from '../services/db/index.js'
 import { getAgent } from '../services/db/agents.js'
 import { getOrCreateSandbox, getE2bWorkspacePath, isPausedSandboxError, closeSandbox } from '../services/agent/e2b-sandbox.js'
 import { performBackup, getBackupStatus, startBackupScheduler } from '../services/agent/backup-scheduler.js'
@@ -37,7 +37,7 @@ router.get('/sandbox/status', async (req, res) => {
     }
 
     // Get thread and verify ownership
-    const thread = getThread(threadId)
+    const thread = await getThread(threadId)
     if (!thread) {
       res.status(404).json({ success: false, error: 'Thread not found' })
       return
@@ -52,7 +52,7 @@ router.get('/sandbox/status', async (req, res) => {
     const agentId = thread.agent_id
     let sandboxId: string | null = null
     if (agentId) {
-      const agent = getAgent(agentId)
+      const agent = await getAgent(agentId)
       sandboxId = agent?.e2b_sandbox_id || null
     }
 
@@ -92,7 +92,7 @@ router.get('/sandbox/files', async (req, res) => {
 
     if (!agentId && threadId) {
       // Get thread and verify ownership
-      const thread = getThread(threadId)
+      const thread = await getThread(threadId)
       if (!thread) {
         res.status(404).json({ success: false, error: 'Thread not found', files: [] })
         return
@@ -108,7 +108,7 @@ router.get('/sandbox/files', async (req, res) => {
 
     // Verify agent exists and belongs to user
     if (agentId) {
-      const agent = getAgent(agentId)
+      const agent = await getAgent(agentId)
       if (!agent) {
         res.status(404).json({ success: false, error: 'Agent not found', files: [] })
         return
@@ -125,7 +125,7 @@ router.get('/sandbox/files', async (req, res) => {
     }
 
     // Fetch any existing backup for restoration when sandbox is created/recreated
-    const backup = getAgentFileBackup(agentId)
+    const backup = await getAgentFileBackup(agentId)
 
     // Get or create sandbox for the agent, passing backup for restoration
     let sandbox = await getOrCreateSandbox(agentId, backup || undefined)
@@ -170,7 +170,7 @@ router.get('/sandbox/files', async (req, res) => {
 
         // Close the cached sandbox and get a fresh one with backup restoration
         closeSandbox(agentId)
-        updateAgentSandboxId(agentId, null)
+        await updateAgentSandboxId(agentId, null)
         sandbox = await getOrCreateSandbox(agentId, backup || undefined)
 
         // Retry listing files
@@ -212,7 +212,7 @@ router.get('/sandbox/file', async (req, res) => {
     }
 
     // Get thread and verify ownership
-    const thread = getThread(threadId)
+    const thread = await getThread(threadId)
     if (!thread) {
       res.status(404).json({ success: false, error: 'Thread not found' })
       return
@@ -231,7 +231,7 @@ router.get('/sandbox/file', async (req, res) => {
     }
 
     // Fetch any existing backup for restoration when sandbox is created/recreated
-    const backup = getAgentFileBackup(agentId)
+    const backup = await getAgentFileBackup(agentId)
 
     // Get sandbox and read file
     const sandbox = await getOrCreateSandbox(agentId, backup || undefined)
@@ -266,7 +266,7 @@ router.post('/sandbox/file', async (req, res) => {
     }
 
     // Get thread and verify ownership
-    const thread = getThread(threadId)
+    const thread = await getThread(threadId)
     if (!thread) {
       res.status(404).json({ success: false, error: 'Thread not found' })
       return
@@ -285,7 +285,7 @@ router.post('/sandbox/file', async (req, res) => {
     }
 
     // Fetch any existing backup for restoration when sandbox is created/recreated
-    const backup = getAgentFileBackup(agentId)
+    const backup = await getAgentFileBackup(agentId)
 
     // Get sandbox and write file
     const sandbox = await getOrCreateSandbox(agentId, backup || undefined)
@@ -326,7 +326,7 @@ router.post('/sandbox/execute', async (req, res) => {
     }
 
     // Get thread and verify ownership
-    const thread = getThread(threadId)
+    const thread = await getThread(threadId)
     if (!thread) {
       res.status(404).json({ success: false, error: 'Thread not found' })
       return
@@ -345,7 +345,7 @@ router.post('/sandbox/execute', async (req, res) => {
     }
 
     // Fetch any existing backup for restoration when sandbox is created/recreated
-    const backup = getAgentFileBackup(agentId)
+    const backup = await getAgentFileBackup(agentId)
 
     // Get sandbox and execute command
     const sandbox = await getOrCreateSandbox(agentId, backup || undefined)
@@ -362,6 +362,51 @@ router.post('/sandbox/execute', async (req, res) => {
     })
   } catch (error) {
     console.error('[Workspace] Sandbox execute error:', error)
+    res.status(500).json({ success: false, error: 'Failed to execute command in sandbox' })
+  }
+})
+
+// Execute command in E2B sandbox by agentId (for terminal panel)
+router.post('/sandbox/execute-terminal', async (req, res) => {
+  try {
+    const { agentId, command, cwd } = req.body
+    const userId = req.user!.userId
+
+    if (!agentId || !command) {
+      res.status(400).json({ success: false, error: 'agentId and command are required' })
+      return
+    }
+
+    if (!process.env.E2B_API_KEY) {
+      res.status(400).json({ success: false, error: 'E2B_API_KEY is not configured' })
+      return
+    }
+
+    // Verify agent ownership
+    const agent = await getAgent(agentId)
+    if (!agent || agent.user_id !== userId) {
+      res.status(403).json({ success: false, error: 'Access denied' })
+      return
+    }
+
+    // Fetch any existing backup for restoration when sandbox is created/recreated
+    const backup = await getAgentFileBackup(agentId)
+
+    // Get sandbox and execute command
+    const sandbox = await getOrCreateSandbox(agentId, backup || undefined)
+    const result = await sandbox.commands.run(command, {
+      cwd: cwd || getE2bWorkspacePath(),
+      timeoutMs: 120_000
+    })
+
+    res.json({
+      success: true,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr
+    })
+  } catch (error) {
+    console.error('[Workspace] Terminal execute error:', error)
     res.status(500).json({ success: false, error: 'Failed to execute command in sandbox' })
   }
 })
@@ -387,7 +432,7 @@ router.get('/sandbox/backup/status', async (req, res) => {
 
     if (!agentId && threadId) {
       // Get thread and verify ownership
-      const thread = getThread(threadId)
+      const thread = await getThread(threadId)
       if (!thread) {
         res.status(404).json({ success: false, error: 'Thread not found' })
         return
@@ -403,7 +448,7 @@ router.get('/sandbox/backup/status', async (req, res) => {
 
     // Verify agent exists and belongs to user
     if (agentId) {
-      const agent = getAgent(agentId)
+      const agent = await getAgent(agentId)
       if (!agent) {
         res.status(404).json({ success: false, error: 'Agent not found' })
         return
@@ -423,7 +468,7 @@ router.get('/sandbox/backup/status', async (req, res) => {
       return
     }
 
-    const status = getBackupStatus(agentId)
+    const status = await getBackupStatus(agentId)
 
     res.json({
       success: true,
@@ -453,7 +498,7 @@ router.post('/sandbox/backup', async (req, res) => {
     }
 
     // Get thread and verify ownership
-    const thread = getThread(threadId)
+    const thread = await getThread(threadId)
     if (!thread) {
       res.status(404).json({ success: false, error: 'Thread not found' })
       return
@@ -474,7 +519,7 @@ router.post('/sandbox/backup', async (req, res) => {
     // Perform backup for agent
     await performBackup(agentId)
 
-    const backupInfo = getAgentBackupInfo(agentId)
+    const backupInfo = await getAgentBackupInfo(agentId)
 
     res.json({
       success: true,
@@ -503,7 +548,7 @@ router.post('/sandbox/backup/restore', async (req, res) => {
     }
 
     // Get thread and verify ownership
-    const thread = getThread(threadId)
+    const thread = await getThread(threadId)
     if (!thread) {
       res.status(404).json({ success: false, error: 'Thread not found' })
       return
@@ -522,14 +567,14 @@ router.post('/sandbox/backup/restore', async (req, res) => {
     }
 
     // Get agent's backup
-    const backup = getAgentFileBackup(agentId)
+    const backup = await getAgentFileBackup(agentId)
     if (!backup || backup.length === 0) {
       res.status(404).json({ success: false, error: 'No backup found for this agent' })
       return
     }
 
     // Clear the old sandbox ID to force creation of a new one
-    updateAgentSandboxId(agentId, null)
+    await updateAgentSandboxId(agentId, null)
 
     // Create new sandbox with restored files for the agent
     const sandbox = await getOrCreateSandbox(agentId, backup)
@@ -560,7 +605,7 @@ router.delete('/sandbox/backup', async (req, res) => {
     }
 
     // Get thread and verify ownership
-    const thread = getThread(threadId)
+    const thread = await getThread(threadId)
     if (!thread) {
       res.status(404).json({ success: false, error: 'Thread not found' })
       return
@@ -578,7 +623,7 @@ router.delete('/sandbox/backup', async (req, res) => {
       return
     }
 
-    clearAgentFileBackup(agentId)
+    await clearAgentFileBackup(agentId)
 
     res.json({ success: true })
   } catch (error) {
@@ -604,7 +649,7 @@ router.get('/backup/file', async (req, res) => {
     }
 
     // Verify agent exists and belongs to user
-    const agent = getAgent(agentId)
+    const agent = await getAgent(agentId)
     if (!agent) {
       res.status(404).json({ success: false, error: 'Agent not found' })
       return
@@ -615,7 +660,7 @@ router.get('/backup/file', async (req, res) => {
     }
 
     // Read file from backup
-    const file = getAgentFileByPath(agentId, filePath)
+    const file = await getAgentFileByPath(agentId, filePath)
     if (!file) {
       res.status(404).json({ success: false, error: 'File not found in backup' })
       return
@@ -624,7 +669,8 @@ router.get('/backup/file', async (req, res) => {
     res.json({
       success: true,
       content: file.content,
-      path: file.path
+      path: file.path,
+      encoding: file.encoding || 'utf8'  // Include encoding so client knows how to decode
     })
   } catch (error) {
     console.error('[Workspace] Backup file read error:', error)
@@ -635,7 +681,7 @@ router.get('/backup/file', async (req, res) => {
 // Write/upload file to backup
 router.post('/backup/file', async (req, res) => {
   try {
-    const { agentId, path: filePath, content } = req.body
+    const { agentId, path: filePath, content, encoding } = req.body
     const userId = req.user!.userId
 
     if (!agentId || !filePath || content === undefined) {
@@ -644,7 +690,7 @@ router.post('/backup/file', async (req, res) => {
     }
 
     // Verify agent exists and belongs to user
-    const agent = getAgent(agentId)
+    const agent = await getAgent(agentId)
     if (!agent) {
       res.status(404).json({ success: false, error: 'Agent not found' })
       return
@@ -654,8 +700,9 @@ router.post('/backup/file', async (req, res) => {
       return
     }
 
-    // Save file to backup
-    saveAgentFile(agentId, filePath, content)
+    // Save file to backup with optional encoding (base64 for binary files)
+    const fileEncoding = encoding === 'base64' ? 'base64' : undefined
+    await saveAgentFile(agentId, filePath, content, fileEncoding)
 
     res.json({
       success: true,
@@ -680,7 +727,7 @@ router.delete('/backup/file', async (req, res) => {
     }
 
     // Verify agent exists and belongs to user
-    const agent = getAgent(agentId)
+    const agent = await getAgent(agentId)
     if (!agent) {
       res.status(404).json({ success: false, error: 'Agent not found' })
       return
@@ -691,7 +738,7 @@ router.delete('/backup/file', async (req, res) => {
     }
 
     // Delete file from backup
-    const deleted = deleteAgentFile(agentId, filePath)
+    const deleted = await deleteAgentFile(agentId, filePath)
 
     res.json({
       success: true,
@@ -700,6 +747,148 @@ router.delete('/backup/file', async (req, res) => {
   } catch (error) {
     console.error('[Workspace] Backup file delete error:', error)
     res.status(500).json({ success: false, error: 'Failed to delete file from backup' })
+  }
+})
+
+// ============================================
+// Folder Operations
+// ============================================
+
+// Download folder as ZIP
+router.get('/:agentId/folder/download', async (req, res) => {
+  try {
+    const agentId = req.params.agentId
+    const folderPath = req.query.path as string
+    const userId = req.user!.userId
+
+    if (!folderPath) {
+      res.status(400).json({ success: false, error: 'path query parameter is required' })
+      return
+    }
+
+    // Verify agent exists and belongs to user
+    const agent = await getAgent(agentId)
+    if (!agent) {
+      res.status(404).json({ success: false, error: 'Agent not found' })
+      return
+    }
+    if (agent.user_id !== userId) {
+      res.status(403).json({ success: false, error: 'Access denied' })
+      return
+    }
+
+    // Security check: path must be under /home/user
+    if (!folderPath.startsWith('/home/user/') && folderPath !== '/home/user') {
+      res.status(403).json({ success: false, error: 'Access denied: path must be under /home/user/' })
+      return
+    }
+
+    if (!process.env.E2B_API_KEY) {
+      res.status(400).json({ success: false, error: 'E2B_API_KEY is not configured' })
+      return
+    }
+
+    // Get or create sandbox for the agent
+    const backup = await getAgentFileBackup(agentId)
+    const sandbox = await getOrCreateSandbox(agentId, backup || undefined)
+
+    // Create zip file in sandbox
+    const zipPath = '/tmp/folder_download.zip'
+    const zipResult = await sandbox.commands.run(`cd "${folderPath}" && zip -r "${zipPath}" .`, {
+      timeoutMs: 120_000
+    })
+
+    if (zipResult.exitCode !== 0) {
+      console.error('[Workspace] Zip creation failed:', zipResult.stderr)
+      res.status(500).json({ success: false, error: 'Failed to create zip file' })
+      return
+    }
+
+    // Read zip file bytes
+    const zipBytes = await sandbox.files.read(zipPath)
+
+    // Clean up temp zip file
+    await sandbox.commands.run(`rm -f "${zipPath}"`)
+
+    // Get folder name for the download filename
+    const folderName = folderPath.split('/').filter(Boolean).pop() || 'folder'
+
+    // Send binary response
+    res.setHeader('Content-Type', 'application/zip')
+    res.setHeader('Content-Disposition', `attachment; filename="${folderName}.zip"`)
+    res.send(Buffer.from(zipBytes))
+  } catch (error) {
+    console.error('[Workspace] Download folder error:', error)
+    res.status(500).json({ success: false, error: 'Failed to download folder' })
+  }
+})
+
+// Empty folder contents (delete everything inside, keep the folder)
+router.delete('/:agentId/folder/empty', async (req, res) => {
+  try {
+    const agentId = req.params.agentId
+    const folderPath = req.query.path as string
+    const userId = req.user!.userId
+
+    if (!folderPath) {
+      res.status(400).json({ success: false, error: 'path query parameter is required' })
+      return
+    }
+
+    // Verify agent exists and belongs to user
+    const agent = await getAgent(agentId)
+    if (!agent) {
+      res.status(404).json({ success: false, error: 'Agent not found' })
+      return
+    }
+    if (agent.user_id !== userId) {
+      res.status(403).json({ success: false, error: 'Access denied' })
+      return
+    }
+
+    // Security check: path must be /home/user or under it, but not anything outside it
+    // Normalize path (remove trailing slash if present)
+    const normalizedPath = folderPath.endsWith('/') ? folderPath.slice(0, -1) : folderPath
+    if (normalizedPath !== '/home/user' && !normalizedPath.startsWith('/home/user/')) {
+      res.status(403).json({ success: false, error: 'Access denied: can only empty /home/user or paths under it' })
+      return
+    }
+
+    if (!process.env.E2B_API_KEY) {
+      res.status(400).json({ success: false, error: 'E2B_API_KEY is not configured' })
+      return
+    }
+
+    // Get or create sandbox for the agent
+    const backup = await getAgentFileBackup(agentId)
+    const sandbox = await getOrCreateSandbox(agentId, backup || undefined)
+
+    // Step 1: Delete files from backup storage first (this is what the UI shows)
+    const deletedFromBackup = await deleteAgentFilesInFolder(agentId, folderPath)
+    console.log(`[Workspace] Deleted ${deletedFromBackup} files from backup for folder ${folderPath}`)
+
+    // Step 2: Also delete from sandbox if available (best effort, don't fail if sandbox is unavailable)
+    try {
+      // Delete all contents inside the folder (but keep the folder itself)
+      // Using rm -rf with /* to delete contents, and also hidden files with .[!.]* and ..?*
+      const rmResult = await sandbox.commands.run(
+        `rm -rf "${folderPath}"/* "${folderPath}"/.[!.]* "${folderPath}"/..?* 2>/dev/null || true`,
+        { timeoutMs: 120_000 }
+      )
+
+      if (rmResult.exitCode !== 0) {
+        // Some errors are expected (e.g., no hidden files), so we don't fail entirely
+        console.warn('[Workspace] Empty folder sandbox warnings:', rmResult.stderr)
+      }
+    } catch (sandboxError) {
+      // Sandbox might be unavailable, but backup was already cleared so we consider this a success
+      console.warn('[Workspace] Could not clear sandbox (backup was cleared):', sandboxError)
+    }
+
+    res.json({ success: true, deletedFiles: deletedFromBackup })
+  } catch (error) {
+    console.error('[Workspace] Empty folder error:', error)
+    res.status(500).json({ success: false, error: 'Failed to empty folder' })
   }
 })
 
@@ -715,7 +904,7 @@ router.get('/backup/files', async (req, res) => {
     }
 
     // Verify agent exists and belongs to user
-    const agent = getAgent(agentId)
+    const agent = await getAgent(agentId)
     if (!agent) {
       res.status(404).json({ success: false, error: 'Agent not found', files: [] })
       return
@@ -726,7 +915,7 @@ router.get('/backup/files', async (req, res) => {
     }
 
     // List files from backup
-    const files = listAgentBackupFiles(agentId)
+    const files = await listAgentBackupFiles(agentId)
 
     res.json({
       success: true,

@@ -145,3 +145,16 @@ export function isBinaryFile(fileName: string): boolean {
   const { type } = getFileType(fileName)
   return type === 'image' || type === 'video' || type === 'audio' || type === 'pdf' || type === 'binary'
 }
+
+export type PrettyRendererType = 'markdown' | 'csv' | 'html' | null
+
+export function getPrettyRendererType(fileName: string): PrettyRendererType {
+  const ext = fileName.includes('.')
+    ? fileName.split('.').pop()?.toLowerCase()
+    : undefined
+  if (!ext) return null
+  if (ext === 'md' || ext === 'mdx') return 'markdown'
+  if (ext === 'csv' || ext === 'tsv') return 'csv'
+  if (ext === 'html' || ext === 'htm') return 'html'
+  return null
+}

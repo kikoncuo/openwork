@@ -1,11 +1,10 @@
 import { useState, useEffect } from 'react'
-import { ChevronDown, Check, AlertCircle, Key } from 'lucide-react'
+import { ChevronDown, Check, AlertCircle } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/lib/store'
 import { useCurrentThread } from '@/lib/thread-context'
 import { cn } from '@/lib/utils'
-import { ApiKeyDialog } from './ApiKeyDialog'
 import type { Provider, ProviderId } from '@/types'
 
 // Provider icons as simple SVG components
@@ -37,7 +36,8 @@ const PROVIDER_ICONS: Record<ProviderId, React.FC<{ className?: string }>> = {
   anthropic: AnthropicIcon,
   openai: OpenAIIcon,
   google: GoogleIcon,
-  ollama: () => null // No icon for ollama yet
+  ollama: () => null, // No icon for ollama yet
+  openrouter: () => null // No icon for openrouter yet
 }
 
 // Fallback providers in case the backend hasn't loaded them yet
@@ -54,11 +54,14 @@ interface ModelSwitcherProps {
 export function ModelSwitcher({ threadId }: ModelSwitcherProps) {
   const [open, setOpen] = useState(false)
   const [selectedProviderId, setSelectedProviderId] = useState<ProviderId | null>(null)
-  const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false)
-  const [apiKeyProvider, setApiKeyProvider] = useState<Provider | null>(null)
-  
-  const { models, providers, loadModels, loadProviders } = useAppStore()
+
+  const { models, providers, loadModels, loadProviders, userTier } = useAppStore()
   const { currentModel, setCurrentModel } = useCurrentThread(threadId)
+
+  // Don't render for users who can't select models (Tier 1)
+  if (!userTier?.features.model_selection) {
+    return null
+  }
 
   // Load models and providers on mount
   useEffect(() => {
@@ -84,7 +87,7 @@ export function ModelSwitcher({ threadId }: ModelSwitcherProps) {
   }, [currentModel, models, selectedProviderId, displayProviders])
 
   const selectedModel = models.find(m => m.id === currentModel)
-  const filteredModels = selectedProviderId 
+  const filteredModels = selectedProviderId
     ? models.filter(m => m.provider === selectedProviderId)
     : []
   const selectedProvider = displayProviders.find(p => p.id === selectedProviderId)
@@ -98,147 +101,108 @@ export function ModelSwitcher({ threadId }: ModelSwitcherProps) {
     setOpen(false)
   }
 
-  function handleConfigureApiKey(provider: Provider) {
-    setApiKeyProvider(provider)
-    setApiKeyDialogOpen(true)
-  }
-
-  function handleApiKeyDialogClose(isOpen: boolean) {
-    setApiKeyDialogOpen(isOpen)
-    if (!isOpen) {
-      // Refresh providers after dialog closes
-      loadProviders()
-      loadModels()
-    }
-  }
-
   return (
-    <>
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
-          >
-            {selectedModel ? (
-              <>
-                {PROVIDER_ICONS[selectedModel.provider]?.({ className: 'size-3.5' })}
-                <span className="font-mono">{selectedModel.id}</span>
-              </>
-            ) : (
-              <span>Select model</span>
-            )}
-            <ChevronDown className="size-3" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent 
-          className="w-[420px] p-0 bg-background border-border" 
-          align="start"
-          sideOffset={8}
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
         >
-          <div className="flex min-h-[240px]">
-            {/* Provider column */}
-            <div className="w-[140px] border-r border-border p-2 bg-muted/30">
-              <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider px-2 py-1.5">
-                Provider
+          {selectedModel ? (
+            <>
+              {PROVIDER_ICONS[selectedModel.provider]?.({ className: 'size-3.5' })}
+              <span className="font-mono">{selectedModel.id}</span>
+            </>
+          ) : (
+            <span>Select model</span>
+          )}
+          <ChevronDown className="size-3" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-[420px] p-0 bg-background border-border"
+        align="start"
+        sideOffset={8}
+      >
+        <div className="flex min-h-[240px]">
+          {/* Provider column */}
+          <div className="w-[140px] border-r border-border p-2 bg-muted/30">
+            <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider px-2 py-1.5">
+              Provider
+            </div>
+            <div className="space-y-0.5">
+              {displayProviders.map((provider) => {
+                const Icon = PROVIDER_ICONS[provider.id]
+                return (
+                  <button
+                    key={provider.id}
+                    onClick={() => handleProviderClick(provider)}
+                    className={cn(
+                      "w-full flex items-center gap-1.5 px-2 py-1 rounded-sm text-xs transition-colors text-left",
+                      selectedProviderId === provider.id
+                        ? "bg-muted text-foreground"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                    )}
+                  >
+                    {Icon && <Icon className="size-3.5 shrink-0" />}
+                    <span className="flex-1 truncate">{provider.name}</span>
+                    {!provider.hasApiKey && (
+                      <AlertCircle className="size-3 text-status-warning shrink-0" />
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Models column */}
+          <div className="flex-1 p-2">
+            <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider px-2 py-1.5">
+              Model
+            </div>
+
+            {selectedProvider && !selectedProvider.hasApiKey ? (
+              // No API key configured - show message (API keys are now server-managed)
+              <div className="flex flex-col items-center justify-center h-[180px] px-4 text-center">
+                <AlertCircle className="size-6 text-muted-foreground mb-2" />
+                <p className="text-xs text-muted-foreground">
+                  {selectedProvider.name} is not configured. Please contact your administrator.
+                </p>
               </div>
-              <div className="space-y-0.5">
-                {displayProviders.map((provider) => {
-                  const Icon = PROVIDER_ICONS[provider.id]
-                  return (
+            ) : (
+              // Show models list with scrollable area
+              <div className="flex flex-col h-[200px]">
+                <div className="overflow-y-auto flex-1 space-y-0.5">
+                  {filteredModels.map((model) => (
                     <button
-                      key={provider.id}
-                      onClick={() => handleProviderClick(provider)}
+                      key={model.id}
+                      onClick={() => handleModelSelect(model.id)}
                       className={cn(
-                        "w-full flex items-center gap-1.5 px-2 py-1 rounded-sm text-xs transition-colors text-left",
-                        selectedProviderId === provider.id
+                        "w-full flex items-center gap-1.5 px-2 py-1 rounded-sm text-xs transition-colors text-left font-mono",
+                        currentModel === model.id
                           ? "bg-muted text-foreground"
                           : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                       )}
                     >
-                      {Icon && <Icon className="size-3.5 shrink-0" />}
-                      <span className="flex-1 truncate">{provider.name}</span>
-                      {!provider.hasApiKey && (
-                        <AlertCircle className="size-3 text-status-warning shrink-0" />
+                      <span className="flex-1 truncate">{model.id}</span>
+                      {currentModel === model.id && (
+                        <Check className="size-3.5 shrink-0 text-foreground" />
                       )}
                     </button>
-                  )
-                })}
-              </div>
-            </div>
+                  ))}
 
-            {/* Models column */}
-            <div className="flex-1 p-2">
-              <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider px-2 py-1.5">
-                Model
-              </div>
-              
-              {selectedProvider && !selectedProvider.hasApiKey ? (
-                // No API key configured
-                <div className="flex flex-col items-center justify-center h-[180px] px-4 text-center">
-                  <Key className="size-6 text-muted-foreground mb-2" />
-                  <p className="text-xs text-muted-foreground mb-3">
-                    API key required for {selectedProvider.name}
-                  </p>
-                  <Button
-                    size="sm"
-                    onClick={() => handleConfigureApiKey(selectedProvider)}
-                  >
-                    Configure API Key
-                  </Button>
-                </div>
-              ) : (
-                // Show models list with scrollable area
-                <div className="flex flex-col h-[200px]">
-                  <div className="overflow-y-auto flex-1 space-y-0.5">
-                    {filteredModels.map((model) => (
-                      <button
-                        key={model.id}
-                        onClick={() => handleModelSelect(model.id)}
-                        className={cn(
-                          "w-full flex items-center gap-1.5 px-2 py-1 rounded-sm text-xs transition-colors text-left font-mono",
-                          currentModel === model.id
-                            ? "bg-muted text-foreground"
-                            : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                        )}
-                      >
-                        <span className="flex-1 truncate">{model.id}</span>
-                        {currentModel === model.id && (
-                          <Check className="size-3.5 shrink-0 text-foreground" />
-                        )}
-                      </button>
-                    ))}
-                    
-                    {filteredModels.length === 0 && (
-                      <p className="text-xs text-muted-foreground px-2 py-4">
-                        No models available
-                      </p>
-                    )}
-                  </div>
-                  
-                  {/* Configure API key link for providers that have a key */}
-                  {selectedProvider?.hasApiKey && (
-                    <button
-                      onClick={() => handleConfigureApiKey(selectedProvider)}
-                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-sm text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors mt-2 border-t border-border pt-2"
-                    >
-                      <Key className="size-3.5" />
-                      <span>Edit API Key</span>
-                    </button>
+                  {filteredModels.length === 0 && (
+                    <p className="text-xs text-muted-foreground px-2 py-4">
+                      No models available
+                    </p>
                   )}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
-        </PopoverContent>
-      </Popover>
-
-      <ApiKeyDialog
-        open={apiKeyDialogOpen}
-        onOpenChange={handleApiKeyDialogClose}
-        provider={apiKeyProvider}
-      />
-    </>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }

@@ -35,7 +35,7 @@ IMPORTANT: This tool only works if WhatsApp is connected in Settings > Apps.`,
           return 'WhatsApp is not connected. Please connect WhatsApp in Settings > Apps to use this tool.'
         }
 
-        const messages = whatsappService.searchMessages(userId, query, chatJid, limit)
+        const messages = await whatsappService.searchMessages(userId, query, chatJid, limit)
 
         if (messages.length === 0) {
           return `No messages found matching "${query}"${chatJid ? ` in the specified chat` : ''}.`
@@ -69,7 +69,7 @@ IMPORTANT: This tool only works if WhatsApp is connected in Settings > Apps.`,
           return 'WhatsApp is not connected. Please connect WhatsApp in Settings > Apps to use this tool.'
         }
 
-        const contacts = whatsappService.getContacts(userId, query)
+        const contacts = await whatsappService.getContacts(userId, query)
 
         if (contacts.length === 0) {
           return query
@@ -111,7 +111,7 @@ IMPORTANT: This tool only works if WhatsApp is connected in Settings > Apps.`,
           return 'WhatsApp is not connected. Please connect WhatsApp in Settings > Apps to use this tool.'
         }
 
-        const messages = whatsappService.getMessageHistory(userId, chatJid, limit)
+        const messages = await whatsappService.getMessageHistory(userId, chatJid, limit)
 
         if (messages.length === 0) {
           return `No message history found for chat ${chatJid}. The chat may not exist or no messages have been synced yet.`
@@ -144,7 +144,7 @@ IMPORTANT: This tool only works if WhatsApp is connected in Settings > Apps.`,
           return 'WhatsApp is not connected. Please connect WhatsApp in Settings > Apps to use this tool.'
         }
 
-        const chats = whatsappService.getChats(userId, limit)
+        const chats = await whatsappService.getChats(userId, limit)
 
         if (chats.length === 0) {
           return 'No chats found. WhatsApp chats may need time to sync after connecting.'

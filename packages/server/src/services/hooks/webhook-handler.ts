@@ -1,5 +1,5 @@
 import crypto from 'crypto'
-import { getDb, saveToDisk } from '../db/index.js'
+import { getSupabase } from '../db/supabase-client.js'
 import { HookEventType, HookHandler, HookEvent, HookResult, hookManager } from './hook-manager.js'
 
 export interface WebhookConfig {
@@ -150,65 +150,52 @@ export function createWebhookHandler(config: WebhookConfig): HookHandler {
 /**
  * Get all webhooks for a user
  */
-export function getWebhooks(userId: string): WebhookConfig[] {
-  const db = getDb()
-  const stmt = db.prepare('SELECT * FROM webhooks WHERE user_id = ?')
-  stmt.bind([userId])
-
-  const webhooks: WebhookConfig[] = []
-  while (stmt.step()) {
-    const row = stmt.getAsObject() as unknown as WebhookRow
-    webhooks.push(rowToConfig(row))
-  }
-  stmt.free()
-
-  return webhooks
+export async function getWebhooks(userId: string): Promise<WebhookConfig[]> {
+  const { data, error } = await getSupabase()
+    .from('webhooks')
+    .select('*')
+    .eq('user_id', userId)
+  if (error || !data) return []
+  return data.map((row: unknown) => rowToConfig(row as WebhookRow))
 }
 
 /**
  * Get a specific webhook by ID
  */
-export function getWebhook(userId: string, webhookId: string): WebhookConfig | null {
-  const db = getDb()
-  const stmt = db.prepare('SELECT * FROM webhooks WHERE id = ? AND user_id = ?')
-  stmt.bind([webhookId, userId])
-
-  if (stmt.step()) {
-    const row = stmt.getAsObject() as unknown as WebhookRow
-    stmt.free()
-    return rowToConfig(row)
-  }
-
-  stmt.free()
-  return null
+export async function getWebhook(userId: string, webhookId: string): Promise<WebhookConfig | null> {
+  const { data, error } = await getSupabase()
+    .from('webhooks')
+    .select('*')
+    .eq('id', webhookId)
+    .eq('user_id', userId)
+    .single()
+  if (error || !data) return null
+  return rowToConfig(data as unknown as WebhookRow)
 }
 
 /**
  * Create a new webhook
  */
-export function createWebhook(config: Omit<WebhookConfig, 'id' | 'createdAt' | 'updatedAt'>): WebhookConfig {
-  const db = getDb()
+export async function createWebhook(config: Omit<WebhookConfig, 'id' | 'createdAt' | 'updatedAt'>): Promise<WebhookConfig> {
   const now = new Date().toISOString()
   const id = crypto.randomUUID()
 
-  db.run(`
-    INSERT INTO webhooks (id, user_id, name, url, secret, event_types, enabled, retry_count, timeout_ms, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `, [
-    id,
-    config.userId,
-    config.name,
-    config.url,
-    config.secret || null,
-    JSON.stringify(config.eventTypes),
-    config.enabled ? 1 : 0,
-    config.retryCount,
-    config.timeoutMs,
-    now,
-    now
-  ])
-
-  saveToDisk()
+  const { error } = await getSupabase()
+    .from('webhooks')
+    .insert({
+      id,
+      user_id: config.userId,
+      name: config.name,
+      url: config.url,
+      secret: config.secret || null,
+      event_types: JSON.stringify(config.eventTypes),
+      enabled: config.enabled ? 1 : 0,
+      retry_count: config.retryCount,
+      timeout_ms: config.timeoutMs,
+      created_at: now,
+      updated_at: now,
+    })
+  if (error) throw new Error(`createWebhook: ${error.message}`)
 
   const webhook: WebhookConfig = {
     ...config,
@@ -228,17 +215,16 @@ export function createWebhook(config: Omit<WebhookConfig, 'id' | 'createdAt' | '
 /**
  * Update an existing webhook
  */
-export function updateWebhook(
+export async function updateWebhook(
   userId: string,
   webhookId: string,
   updates: Partial<Omit<WebhookConfig, 'id' | 'userId' | 'createdAt' | 'updatedAt'>>
-): WebhookConfig | null {
-  const existing = getWebhook(userId, webhookId)
+): Promise<WebhookConfig | null> {
+  const existing = await getWebhook(userId, webhookId)
   if (!existing) {
     return null
   }
 
-  const db = getDb()
   const now = new Date().toISOString()
 
   const updated: WebhookConfig = {
@@ -247,24 +233,21 @@ export function updateWebhook(
     updatedAt: new Date(now)
   }
 
-  db.run(`
-    UPDATE webhooks
-    SET name = ?, url = ?, secret = ?, event_types = ?, enabled = ?, retry_count = ?, timeout_ms = ?, updated_at = ?
-    WHERE id = ? AND user_id = ?
-  `, [
-    updated.name,
-    updated.url,
-    updated.secret || null,
-    JSON.stringify(updated.eventTypes),
-    updated.enabled ? 1 : 0,
-    updated.retryCount,
-    updated.timeoutMs,
-    now,
-    webhookId,
-    userId
-  ])
-
-  saveToDisk()
+  const { error } = await getSupabase()
+    .from('webhooks')
+    .update({
+      name: updated.name,
+      url: updated.url,
+      secret: updated.secret || null,
+      event_types: JSON.stringify(updated.eventTypes),
+      enabled: updated.enabled ? 1 : 0,
+      retry_count: updated.retryCount,
+      timeout_ms: updated.timeoutMs,
+      updated_at: now,
+    })
+    .eq('id', webhookId)
+    .eq('user_id', userId)
+  if (error) throw new Error(`updateWebhook: ${error.message}`)
 
   // Re-register the webhook handler with updated config
   hookManager.unregisterHandler(`webhook:${webhookId}`)
@@ -278,38 +261,41 @@ export function updateWebhook(
 /**
  * Delete a webhook
  */
-export function deleteWebhook(userId: string, webhookId: string): boolean {
-  const db = getDb()
+export async function deleteWebhook(userId: string, webhookId: string): Promise<boolean> {
+  const { error } = await getSupabase()
+    .from('webhooks')
+    .delete()
+    .eq('id', webhookId)
+    .eq('user_id', userId)
 
-  const result = db.run('DELETE FROM webhooks WHERE id = ? AND user_id = ?', [webhookId, userId])
+  if (error) return false
 
-  if (result) {
-    saveToDisk()
-    hookManager.unregisterHandler(`webhook:${webhookId}`)
-    console.log(`[Webhook] Deleted webhook ${webhookId}`)
-    return true
-  }
-
-  return false
+  hookManager.unregisterHandler(`webhook:${webhookId}`)
+  console.log(`[Webhook] Deleted webhook ${webhookId}`)
+  return true
 }
 
 /**
  * Load all webhooks from database and register as handlers
  */
-export function loadWebhooksFromDb(): void {
-  const db = getDb()
-  const stmt = db.prepare('SELECT * FROM webhooks')
+export async function loadWebhooksFromDb(): Promise<void> {
+  const { data, error } = await getSupabase()
+    .from('webhooks')
+    .select('*')
+
+  if (error || !data) {
+    console.log('[Webhook] No webhooks loaded')
+    return
+  }
 
   let count = 0
-  while (stmt.step()) {
-    const row = stmt.getAsObject() as unknown as WebhookRow
-    const config = rowToConfig(row)
+  for (const row of data) {
+    const config = rowToConfig(row as unknown as WebhookRow)
     const handler = createWebhookHandler(config)
     hookManager.registerHandler(handler)
     count++
   }
 
-  stmt.free()
   console.log(`[Webhook] Loaded ${count} webhooks from database`)
 }
 

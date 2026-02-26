@@ -135,7 +135,17 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
 
   // null = creating new agent, string = editing existing agent
   const isCreatingNew = propAgentId === null
-  const targetAgentId = propAgentId === undefined ? activeAgentId : propAgentId
+
+  // Capture the agent ID when dialog opens - don't track activeAgentId changes while open
+  const [capturedAgentId, setCapturedAgentId] = useState<string | null | undefined>(undefined)
+  useEffect(() => {
+    if (open) {
+      // Only capture when dialog opens, not when activeAgentId changes
+      setCapturedAgentId(propAgentId === undefined ? activeAgentId : propAgentId)
+    }
+  }, [open, propAgentId]) // Intentionally exclude activeAgentId
+
+  const targetAgentId = open ? capturedAgentId : (propAgentId === undefined ? activeAgentId : propAgentId)
   const existingAgent = targetAgentId ? agents.find((a) => a.agent_id === targetAgentId) : null
 
   const [activeTab, setActiveTab] = useState<'agent' | 'api-keys' | 'apps' | 'mcp' | 'tools' | 'prompt'>('agent')
@@ -175,10 +185,10 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
 
   // Load settings when dialog opens
   useEffect(() => {
-    if (open) {
+    if (open && capturedAgentId !== undefined) {
       loadAllSettings()
     }
-  }, [open, targetAgentId, isCreatingNew])
+  }, [open, capturedAgentId, isCreatingNew])
 
   // Listen for WhatsApp connection changes to reload tools
   useEffect(() => {
@@ -193,8 +203,17 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
 
         if (data.connected) {
           // Load saved configs and WhatsApp tools asynchronously
+          // Use agent-specific configs if targetAgentId is set
+          const loadConfigs = async () => {
+            if (targetAgentId) {
+              const agentConfigs = await window.api.agents.getToolConfigs(targetAgentId)
+              return agentConfigs !== null ? agentConfigs : await window.api.tools.getConfigs()
+            }
+            return window.api.tools.getConfigs()
+          }
+
           Promise.all([
-            window.api.tools.getConfigs(),
+            loadConfigs(),
             window.api.whatsapp.getTools()
           ]).then(([savedConfigs, whatsappTools]) => {
             console.log('[Settings] Connection change - loading WhatsApp tools:', whatsappTools)
@@ -228,7 +247,7 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
       cleanup()
       window.api.whatsapp.unsubscribeConnection()
     }
-  }, [open])
+  }, [open, targetAgentId])
 
   // Reload WhatsApp tools when switching to Tools tab (ensures tools appear if loaded late)
   useEffect(() => {
@@ -242,8 +261,14 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
           const hasWhatsAppTools = tools.some(t => t.source === 'app' && t.appName === 'WhatsApp')
           if (!hasWhatsAppTools) {
             console.log('[Settings] Tools tab: WhatsApp connected but no tools found, reloading...')
-            // Load saved configs to restore user preferences
-            const savedConfigs = await window.api.tools.getConfigs()
+            // Load saved configs to restore user preferences - use agent-specific if targetAgentId is set
+            let savedConfigs: Array<{ id: string; enabled: boolean; requireApproval?: boolean }> = []
+            if (targetAgentId) {
+              const agentConfigs = await window.api.agents.getToolConfigs(targetAgentId)
+              savedConfigs = agentConfigs !== null ? agentConfigs : await window.api.tools.getConfigs()
+            } else {
+              savedConfigs = await window.api.tools.getConfigs()
+            }
             const whatsappTools = await window.api.whatsapp.getTools()
             const whatsappToolConfigs: ToolConfig[] = whatsappTools.map(t => {
               const savedConfig = savedConfigs.find((c: { id: string }) => c.id === t.id)
@@ -266,7 +291,7 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
     }
 
     checkAndLoadWhatsAppTools()
-  }, [activeTab, loading, tools])
+  }, [activeTab, loading, tools, targetAgentId])
 
   async function loadAllSettings() {
     setLoading(true)
@@ -310,10 +335,21 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
     setApiKeys(keys)
     setSavedKeys(saved)
 
-    // Load tool configs (needed for both built-in and app tools)
+    // Load tool configs - try agent-specific first, fall back to global
     let savedConfigs: Array<{ id: string; enabled: boolean; requireApproval?: boolean }> = []
     try {
-      savedConfigs = await window.api.tools.getConfigs()
+      if (targetAgentId) {
+        const agentConfigs = await window.api.agents.getToolConfigs(targetAgentId)
+        if (agentConfigs !== null) {
+          savedConfigs = agentConfigs
+          console.log('[Settings] Using agent-specific tool configs')
+        } else {
+          savedConfigs = await window.api.tools.getConfigs()
+          console.log('[Settings] No agent tool configs, using global')
+        }
+      } else {
+        savedConfigs = await window.api.tools.getConfigs()
+      }
     } catch (e) {
       console.error('Failed to load tool configs:', e)
     }
@@ -352,9 +388,21 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
 
     setTools(mergedTools)
 
-    // Load MCP servers and test connections
+    // Load MCP servers - try agent-specific first, fall back to global
     try {
-      const servers = await window.api.mcp.list()
+      let servers: MCPServer[]
+      if (targetAgentId) {
+        const agentServers = await window.api.agents.getMcpServers(targetAgentId)
+        if (agentServers !== null) {
+          servers = agentServers
+          console.log('[Settings] Using agent-specific MCP servers')
+        } else {
+          servers = await window.api.mcp.list()
+          console.log('[Settings] No agent MCP servers, using global')
+        }
+      } else {
+        servers = await window.api.mcp.list()
+      }
       setMcpServers(servers)
 
       const enabledServers = servers.filter(s => s.enabled)
@@ -365,14 +413,39 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
       console.error('Failed to load MCP servers:', e)
     }
 
-    // Load system prompt data
+    // Load system prompt data - try agent-specific first, fall back to global
     try {
-      const [base, custom, loadedInsights] = await Promise.all([
-        window.api.prompt.getBase(),
-        window.api.prompt.getCustom(),
-        window.api.insights.list()
-      ])
+      const base = await window.api.prompt.getBase()
       setBasePrompt(base)
+
+      let custom: string | null = null
+      let loadedInsights: LearnedInsight[] = []
+
+      if (targetAgentId) {
+        // Try to load agent-specific prompt
+        const agentPrompt = await window.api.agents.getCustomPrompt(targetAgentId)
+        if (agentPrompt !== undefined) {
+          custom = agentPrompt
+          console.log('[Settings] Using agent-specific custom prompt')
+        } else {
+          custom = await window.api.prompt.getCustom()
+          console.log('[Settings] No agent custom prompt, using global')
+        }
+
+        // Try to load agent-specific insights
+        const agentInsights = await window.api.agents.getInsights(targetAgentId)
+        if (agentInsights !== null) {
+          loadedInsights = agentInsights
+          console.log('[Settings] Using agent-specific insights')
+        } else {
+          loadedInsights = await window.api.insights.list()
+          console.log('[Settings] No agent insights, using global')
+        }
+      } else {
+        custom = await window.api.prompt.getCustom()
+        loadedInsights = await window.api.insights.list()
+      }
+
       setCustomPrompt(custom || '')
       setPromptModified(false)
       setInsights(loadedInsights)
@@ -515,7 +588,7 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
     setShowKeys((prev) => ({ ...prev, [providerId]: !prev[providerId] }))
   }
 
-  // MCP handlers
+  // MCP handlers - use agent-specific APIs when targetAgentId is set
   async function addMcpServer() {
     if (!newMcpName.trim() || !newMcpCommand.trim()) return
     const newServer: MCPServer = {
@@ -532,7 +605,11 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
     setNewMcpArgs('')
 
     try {
-      await window.api.mcp.save(updated)
+      if (targetAgentId) {
+        await window.api.agents.saveMcpServers(targetAgentId, updated)
+      } else {
+        await window.api.mcp.save(updated)
+      }
       testMcpConnection(newServer)
     } catch (e) {
       console.error('Failed to save MCP server:', e)
@@ -554,7 +631,11 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
     })
 
     try {
-      await window.api.mcp.save(updated)
+      if (targetAgentId) {
+        await window.api.agents.saveMcpServers(targetAgentId, updated)
+      } else {
+        await window.api.mcp.save(updated)
+      }
     } catch (e) {
       console.error('Failed to remove MCP server:', e)
     }
@@ -568,7 +649,11 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
     setMcpServers(updated)
 
     try {
-      await window.api.mcp.save(updated)
+      if (targetAgentId) {
+        await window.api.agents.saveMcpServers(targetAgentId, updated)
+      } else {
+        await window.api.mcp.save(updated)
+      }
 
       if (server && !server.enabled) {
         testMcpConnection({ ...server, enabled: true })
@@ -584,19 +669,25 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
     }
   }
 
-  // Tool handlers
+  // Tool handlers - use agent-specific APIs when targetAgentId is set
   async function toggleTool(id: string) {
     const updated = tools.map((t) =>
       t.id === id ? { ...t, enabled: !t.enabled } : t
     )
     setTools(updated)
 
+    const configsToSave = updated.map((t) => ({
+      id: t.id,
+      enabled: t.enabled,
+      requireApproval: t.requireApproval
+    }))
+
     try {
-      await window.api.tools.saveConfigs(updated.map((t) => ({
-        id: t.id,
-        enabled: t.enabled,
-        requireApproval: t.requireApproval
-      })))
+      if (targetAgentId) {
+        await window.api.agents.saveToolConfigs(targetAgentId, configsToSave)
+      } else {
+        await window.api.tools.saveConfigs(configsToSave)
+      }
     } catch (e) {
       console.error('Failed to save tool config:', e)
     }
@@ -608,12 +699,18 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
     )
     setTools(updated)
 
+    const configsToSave = updated.map((t) => ({
+      id: t.id,
+      enabled: t.enabled,
+      requireApproval: t.requireApproval
+    }))
+
     try {
-      await window.api.tools.saveConfigs(updated.map((t) => ({
-        id: t.id,
-        enabled: t.enabled,
-        requireApproval: t.requireApproval
-      })))
+      if (targetAgentId) {
+        await window.api.agents.saveToolConfigs(targetAgentId, configsToSave)
+      } else {
+        await window.api.tools.saveConfigs(configsToSave)
+      }
     } catch (e) {
       console.error('Failed to save tool config:', e)
     }
@@ -623,12 +720,16 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
   const mcpTools = tools.filter(t => t.source === 'mcp')
   const appTools = tools.filter(t => t.source === 'app')
 
-  // Prompt handlers
+  // Prompt handlers - use agent-specific APIs when targetAgentId is set
   async function saveCustomPrompt() {
     setSavingPrompt(true)
     try {
       const promptToSave = customPrompt.trim() || null
-      await window.api.prompt.setCustom(promptToSave)
+      if (targetAgentId) {
+        await window.api.agents.setCustomPrompt(targetAgentId, promptToSave)
+      } else {
+        await window.api.prompt.setCustom(promptToSave)
+      }
       setPromptModified(false)
     } catch (e) {
       console.error('Failed to save custom prompt:', e)
@@ -645,7 +746,12 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
   async function addInsight() {
     if (!newInsight.trim()) return
     try {
-      const insight = await window.api.insights.add(newInsight.trim(), 'user_feedback')
+      let insight
+      if (targetAgentId) {
+        insight = await window.api.agents.addInsight(targetAgentId, newInsight.trim(), 'user_feedback')
+      } else {
+        insight = await window.api.insights.add(newInsight.trim(), 'user_feedback')
+      }
       setInsights(prev => [...prev, insight])
       setNewInsight('')
     } catch (e) {
@@ -655,7 +761,11 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
 
   async function removeInsight(id: string) {
     try {
-      await window.api.insights.remove(id)
+      if (targetAgentId) {
+        await window.api.agents.removeInsight(targetAgentId, id)
+      } else {
+        await window.api.insights.remove(id)
+      }
       setInsights(prev => prev.filter(i => i.id !== id))
     } catch (e) {
       console.error('Failed to remove insight:', e)
@@ -664,7 +774,11 @@ export function SettingsDialog({ open, onOpenChange, agentId: propAgentId }: Set
 
   async function toggleInsight(id: string) {
     try {
-      await window.api.insights.toggle(id)
+      if (targetAgentId) {
+        await window.api.agents.toggleInsight(targetAgentId, id)
+      } else {
+        await window.api.insights.toggle(id)
+      }
       setInsights(prev => prev.map(i =>
         i.id === id ? { ...i, enabled: !i.enabled } : i
       ))

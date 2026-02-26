@@ -1,7 +1,7 @@
 // Re-export types from electron for use in renderer
 export type ThreadStatus = 'idle' | 'busy' | 'interrupted' | 'error'
 
-export type ThreadSource = 'chat' | 'whatsapp'
+export type ThreadSource = 'chat' | 'whatsapp' | 'cronjob'
 
 export interface Thread {
   thread_id: string
@@ -54,7 +54,7 @@ export interface Run {
 }
 
 // Provider configuration
-export type ProviderId = 'anthropic' | 'openai' | 'google' | 'ollama'
+export type ProviderId = 'anthropic' | 'openai' | 'google' | 'ollama' | 'openrouter'
 
 export interface Provider {
   id: ProviderId
@@ -69,6 +69,19 @@ export interface ModelConfig {
   model: string
   description?: string
   available: boolean
+}
+
+// User tier for tier-based model management
+export interface UserTier {
+  tier_id: number
+  name: string
+  display_name: string
+  default_model: string
+  available_models: string[]
+  features: {
+    model_selection: boolean
+    custom_providers: boolean
+  }
 }
 
 // Subagent types (from deepagentsjs)
@@ -163,6 +176,25 @@ export interface GrepMatch {
   text: string
 }
 
+// Terminal types
+export interface TerminalInstance {
+  id: string
+  name: string
+  cwd: string
+  history: TerminalEntry[]
+  isRunning: boolean
+}
+
+export interface TerminalEntry {
+  id: string
+  command: string
+  output: string
+  exitCode: number | null
+  timestamp: Date
+  isStreaming: boolean
+  source: 'user' | 'agent'
+}
+
 // IPC/Stream types for electron-transport
 export interface StreamPayload {
   input?: unknown
@@ -170,6 +202,7 @@ export interface StreamPayload {
     configurable?: {
       thread_id?: string
       model_id?: string
+      plan_mode?: boolean
     }
   }
   command?: {
@@ -197,4 +230,156 @@ export interface IPCStreamEvent extends IPCEvent {
   type: 'stream'
   mode: string
   data: unknown
+}
+
+// Admin types
+export interface AdminUser {
+  user_id: string
+  email: string
+  name: string | null
+  tier_id: number
+  is_admin: number
+  created_at: number
+  updated_at: number
+}
+
+export interface AdminStats {
+  totalUsers: number
+  totalThreads: number
+  totalAgents: number
+  totalSkills: number
+  totalCronjobs: number
+  totalWebhooks: number
+  totalAppConnections: number
+  totalWhatsAppContacts: number
+  totalWhatsAppChats: number
+  totalRuns: number
+}
+
+export interface AdminTier {
+  tier_id: number
+  name: string
+  display_name: string
+  default_model: string
+  available_models: string[]
+  features: Record<string, boolean>
+  created_at: number
+  updated_at: number
+}
+
+export interface AdminWebhook {
+  id: string
+  user_id: string
+  name: string
+  url: string
+  secret: string | null
+  event_types: string
+  enabled: number
+  retry_count: number
+  timeout_ms: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AdminAppConnection {
+  id: string
+  user_id: string
+  app_type: string
+  status: string
+  health_status: string
+  warning_message: string | null
+  last_health_check_at: string | null
+  last_successful_activity_at: string | null
+  metadata: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AdminWhatsAppContact {
+  jid: string
+  user_id: string
+  name: string | null
+  push_name: string | null
+  phone_number: string | null
+  is_group: number
+  updated_at: number
+}
+
+export interface AdminWhatsAppChat {
+  jid: string
+  user_id: string
+  name: string | null
+  is_group: number
+  last_message_time: number | null
+  unread_count: number
+  updated_at: number
+}
+
+export interface AdminRun {
+  run_id: string
+  thread_id: string
+  assistant_id: string | null
+  created_at: number
+  updated_at: number
+  status: string | null
+  metadata: string | null
+  kwargs: string | null
+}
+
+export interface AdminThread {
+  thread_id: string
+  created_at: number
+  updated_at: number
+  title: string | null
+  status: string
+  agent_id: string | null
+  user_id: string | null
+  source: string | null
+  needs_attention: number
+}
+
+export interface AdminAgent {
+  agent_id: string
+  name: string
+  color: string
+  icon: string
+  model_default: string
+  is_default: number
+  user_id: string | null
+  created_at: number
+  updated_at: number
+}
+
+export interface AdminSkill {
+  skill_id: string
+  name: string
+  description: string | null
+  source_url: string
+  folder_path: string
+  file_count: number
+  user_id: string
+  created_at: number
+  updated_at: number
+}
+
+export interface SQLResult {
+  columns: string[]
+  rows: unknown[][]
+  error?: string
+}
+
+export interface AdminCronjob {
+  cronjob_id: string
+  user_id: string
+  name: string
+  cron_expression: string
+  message: string
+  agent_id: string
+  thread_mode: string
+  thread_timeout_minutes: number
+  enabled: number
+  last_run_at: number | null
+  next_run_at: number | null
+  created_at: number
+  updated_at: number
 }

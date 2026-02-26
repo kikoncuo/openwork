@@ -8,7 +8,7 @@
  */
 
 import { backupSandboxFiles, hasCachedSandbox } from './e2b-sandbox.js'
-import { saveAgentFileBackup, getAgentBackupInfo } from '../db/index.js'
+import { saveAgentFileBackup, getAgentBackupInfo, type BackupInfo } from '../db/index.js'
 
 // Configuration
 const BACKUP_INTERVAL_MS = 2 * 60 * 1000 // 2 minutes
@@ -97,7 +97,7 @@ export async function performBackup(agentId: string): Promise<void> {
     const files = await backupSandboxFiles(agentId)
 
     if (files.length > 0) {
-      saveAgentFileBackup(agentId, files)
+      await saveAgentFileBackup(agentId, files)
 
       const totalSize = files.reduce((sum, f) => sum + f.content.length, 0)
       console.log(
@@ -112,13 +112,13 @@ export async function performBackup(agentId: string): Promise<void> {
 /**
  * Get backup status for an agent.
  */
-export function getBackupStatus(agentId: string): {
+export async function getBackupStatus(agentId: string): Promise<{
   schedulerActive: boolean
-  backupInfo: { fileCount: number; totalSize: number; updatedAt: number } | null
-} {
+  backupInfo: BackupInfo | null
+}> {
   return {
     schedulerActive: backupIntervals.has(agentId),
-    backupInfo: getAgentBackupInfo(agentId)
+    backupInfo: await getAgentBackupInfo(agentId)
   }
 }
 

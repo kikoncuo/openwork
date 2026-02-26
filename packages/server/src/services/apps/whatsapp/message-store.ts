@@ -1,231 +1,214 @@
 /**
- * WhatsApp Message Store - SQLite-based storage for contacts, chats, and messages
+ * WhatsApp Message Store - Supabase-based storage for contacts, chats, and messages
  */
 
-import { getDb, saveToDisk } from '../../db/index.js'
+import { getSupabase } from '../../db/supabase-client.js'
 import type { ContactInfo, ChatInfo, MessageInfo } from './types.js'
 
 class WhatsAppMessageStore {
   // Contact operations
 
-  saveContact(contact: ContactInfo, userId: string): void {
-    const db = getDb()
+  async saveContact(contact: ContactInfo, userId: string): Promise<void> {
     const now = Date.now()
 
-    db.run(
-      `INSERT OR REPLACE INTO whatsapp_contacts (jid, user_id, name, push_name, phone_number, is_group, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [contact.jid, userId, contact.name, contact.pushName, contact.phoneNumber, contact.isGroup ? 1 : 0, now]
-    )
-    saveToDisk()
+    await getSupabase()
+      .from('whatsapp_contacts')
+      .upsert({
+        jid: contact.jid,
+        user_id: userId,
+        name: contact.name,
+        push_name: contact.pushName,
+        phone_number: contact.phoneNumber,
+        is_group: contact.isGroup ? 1 : 0,
+        updated_at: now,
+      }, { onConflict: 'jid,user_id' })
   }
 
-  getContacts(userId: string, query?: string): ContactInfo[] {
-    const db = getDb()
-    let sql = 'SELECT * FROM whatsapp_contacts WHERE user_id = ? ORDER BY name ASC'
-    const params: string[] = [userId]
+  async getContacts(userId: string, query?: string): Promise<ContactInfo[]> {
+    let qb = getSupabase()
+      .from('whatsapp_contacts')
+      .select('*')
+      .eq('user_id', userId)
+      .order('name', { ascending: true })
 
     if (query) {
-      sql = `SELECT * FROM whatsapp_contacts
-             WHERE user_id = ? AND (name LIKE ? OR push_name LIKE ? OR phone_number LIKE ?)
-             ORDER BY name ASC`
       const pattern = `%${query}%`
-      params.push(pattern, pattern, pattern)
+      qb = qb.or(`name.ilike.${pattern},push_name.ilike.${pattern},phone_number.ilike.${pattern}`)
     }
 
-    const stmt = db.prepare(sql)
-    stmt.bind(params)
+    const { data, error } = await qb
+    if (error || !data) return []
 
-    const contacts: ContactInfo[] = []
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as any
-      contacts.push({
-        jid: row.jid,
-        name: row.name || row.jid.split('@')[0],
-        pushName: row.push_name,
-        phoneNumber: row.phone_number,
-        isGroup: row.is_group === 1,
-      })
-    }
-    stmt.free()
-
-    return contacts
+    return data.map((row: any) => ({
+      jid: row.jid,
+      name: row.name || row.jid.split('@')[0],
+      pushName: row.push_name,
+      phoneNumber: row.phone_number,
+      isGroup: row.is_group === 1,
+    }))
   }
 
   // Chat operations
 
-  saveChat(chat: ChatInfo, userId: string): void {
-    const db = getDb()
+  async saveChat(chat: ChatInfo, userId: string): Promise<void> {
     const now = Date.now()
 
-    db.run(
-      `INSERT OR REPLACE INTO whatsapp_chats (jid, user_id, name, is_group, last_message_time, unread_count, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [chat.jid, userId, chat.name, chat.isGroup ? 1 : 0, chat.lastMessageTime || null, chat.unreadCount, now]
-    )
-    saveToDisk()
+    await getSupabase()
+      .from('whatsapp_chats')
+      .upsert({
+        jid: chat.jid,
+        user_id: userId,
+        name: chat.name,
+        is_group: chat.isGroup ? 1 : 0,
+        last_message_time: chat.lastMessageTime || null,
+        unread_count: chat.unreadCount,
+        updated_at: now,
+      }, { onConflict: 'jid,user_id' })
   }
 
-  getChats(userId: string, limit = 50): ChatInfo[] {
-    const db = getDb()
-    const stmt = db.prepare(
-      `SELECT c.*, ct.name as contact_name, ct.push_name as contact_push_name
-       FROM whatsapp_chats c
-       LEFT JOIN whatsapp_contacts ct ON c.jid = ct.jid AND c.user_id = ct.user_id
-       WHERE c.user_id = ?
-       ORDER BY c.last_message_time DESC NULLS LAST
-       LIMIT ?`
-    )
-    stmt.bind([userId, limit])
+  async getChats(userId: string, limit = 50): Promise<ChatInfo[]> {
+    // Supabase doesn't support JOINs directly in the JS client for different tables
+    // So we fetch chats and contacts separately
+    const { data: chats } = await getSupabase()
+      .from('whatsapp_chats')
+      .select('*')
+      .eq('user_id', userId)
+      .order('last_message_time', { ascending: false, nullsFirst: false })
+      .limit(limit)
 
-    const chats: ChatInfo[] = []
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as any
-      // Use contact name if available, then chat name, then phone number
-      const name = row.contact_name || row.contact_push_name || row.name || row.jid.split('@')[0]
-      chats.push({
+    if (!chats || chats.length === 0) return []
+
+    // Get contacts for name resolution
+    const jids = chats.map((c: any) => c.jid)
+    const { data: contacts } = await getSupabase()
+      .from('whatsapp_contacts')
+      .select('jid, name, push_name')
+      .eq('user_id', userId)
+      .in('jid', jids)
+
+    const contactMap = new Map<string, { name: string | null; push_name: string | null }>()
+    if (contacts) {
+      for (const c of contacts) {
+        contactMap.set(c.jid, { name: c.name, push_name: c.push_name })
+      }
+    }
+
+    return chats.map((row: any) => {
+      const contact = contactMap.get(row.jid)
+      const name = contact?.name || contact?.push_name || row.name || row.jid.split('@')[0]
+      return {
         jid: row.jid,
         name,
         isGroup: row.is_group === 1,
         lastMessageTime: row.last_message_time || undefined,
         unreadCount: row.unread_count || 0,
-      })
-    }
-    stmt.free()
-
-    return chats
+      }
+    })
   }
 
   // Message operations
 
-  saveMessage(message: MessageInfo, userId: string): void {
-    const db = getDb()
+  async saveMessage(message: MessageInfo, userId: string): Promise<void> {
     const now = Date.now()
 
-    db.run(
-      `INSERT OR REPLACE INTO whatsapp_messages
-       (message_id, user_id, chat_jid, from_jid, from_me, timestamp, message_type, content, raw_message, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        message.id,
-        userId,
-        message.to,
-        message.from,
-        message.fromMe ? 1 : 0,
-        message.timestamp,
-        message.type,
-        message.content,
-        JSON.stringify(message),
-        now,
-      ]
-    )
-    saveToDisk()
+    await getSupabase()
+      .from('whatsapp_messages')
+      .upsert({
+        message_id: message.id,
+        user_id: userId,
+        chat_jid: message.to,
+        from_jid: message.from,
+        from_me: message.fromMe ? 1 : 0,
+        timestamp: message.timestamp,
+        message_type: message.type,
+        content: message.content,
+        raw_message: JSON.stringify(message),
+        created_at: now,
+      }, { onConflict: 'message_id,user_id' })
   }
 
-  getMessages(chatJid: string, userId: string, limit = 50): MessageInfo[] {
-    const db = getDb()
-    const stmt = db.prepare(
-      `SELECT * FROM whatsapp_messages
-       WHERE chat_jid = ? AND user_id = ?
-       ORDER BY timestamp DESC
-       LIMIT ?`
-    )
-    stmt.bind([chatJid, userId, limit])
+  async getMessages(chatJid: string, userId: string, limit = 50): Promise<MessageInfo[]> {
+    const { data, error } = await getSupabase()
+      .from('whatsapp_messages')
+      .select('*')
+      .eq('chat_jid', chatJid)
+      .eq('user_id', userId)
+      .order('timestamp', { ascending: false })
+      .limit(limit)
 
-    const messages: MessageInfo[] = []
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as any
-      messages.push(this.rowToMessageInfo(row))
-    }
-    stmt.free()
+    if (error || !data) return []
 
+    const messages = data.map((row: any) => this.rowToMessageInfo(row))
     // Return in chronological order (oldest first)
     return messages.reverse()
   }
 
-  searchMessages(query: string, userId: string, chatJid?: string, limit = 20): MessageInfo[] {
-    const db = getDb()
+  async searchMessages(query: string, userId: string, chatJid?: string, limit = 20): Promise<MessageInfo[]> {
     const queryLower = query.toLowerCase()
+    const pattern = `%${queryLower}%`
 
-    let sql: string
-    const params: (string | number)[] = []
+    let qb = getSupabase()
+      .from('whatsapp_messages')
+      .select('*')
+      .eq('user_id', userId)
+      .ilike('content', pattern)
+      .order('timestamp', { ascending: false })
+      .limit(limit)
 
     if (chatJid) {
-      sql = `SELECT * FROM whatsapp_messages
-             WHERE chat_jid = ? AND user_id = ? AND content LIKE ?
-             ORDER BY timestamp DESC
-             LIMIT ?`
-      params.push(chatJid, userId, `%${queryLower}%`, limit)
-    } else {
-      sql = `SELECT * FROM whatsapp_messages
-             WHERE user_id = ? AND content LIKE ?
-             ORDER BY timestamp DESC
-             LIMIT ?`
-      params.push(userId, `%${queryLower}%`, limit)
+      qb = qb.eq('chat_jid', chatJid)
     }
 
-    const stmt = db.prepare(sql)
-    stmt.bind(params)
+    const { data, error } = await qb
+    if (error || !data) return []
 
-    const messages: MessageInfo[] = []
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as any
-      messages.push(this.rowToMessageInfo(row))
-    }
-    stmt.free()
-
-    return messages
+    return data.map((row: any) => this.rowToMessageInfo(row))
   }
 
   // App connection operations
 
-  getAppConnection(appId: string): { enabled: boolean; connected: boolean; data: any } | null {
-    const db = getDb()
-    const stmt = db.prepare('SELECT * FROM app_connections WHERE app_id = ?')
-    stmt.bind([appId])
+  async getAppConnection(appId: string): Promise<{ enabled: boolean; connected: boolean; data: any } | null> {
+    const { data, error } = await getSupabase()
+      .from('app_connections')
+      .select('*')
+      .eq('id', appId)
+      .single()
 
-    if (!stmt.step()) {
-      stmt.free()
-      return null
-    }
-
-    const row = stmt.getAsObject() as any
-    stmt.free()
+    if (error || !data) return null
 
     return {
-      enabled: row.enabled === 1,
-      connected: row.connected === 1,
-      data: row.connection_data ? JSON.parse(row.connection_data) : null,
+      enabled: (data as any).enabled === 1,
+      connected: (data as any).connected === 1,
+      data: (data as any).connection_data ? JSON.parse((data as any).connection_data) : null,
     }
   }
 
-  saveAppConnection(appId: string, enabled: boolean, connected: boolean, data?: any): void {
-    const db = getDb()
+  async saveAppConnection(appId: string, enabled: boolean, connected: boolean, data?: any): Promise<void> {
     const now = Date.now()
 
-    db.run(
-      `INSERT OR REPLACE INTO app_connections (app_id, enabled, connected, connection_data, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      [appId, enabled ? 1 : 0, connected ? 1 : 0, data ? JSON.stringify(data) : null, now]
-    )
-    saveToDisk()
+    await getSupabase()
+      .from('app_connections')
+      .upsert({
+        id: appId,
+        enabled: enabled ? 1 : 0,
+        connected: connected ? 1 : 0,
+        connection_data: data ? JSON.stringify(data) : null,
+        updated_at: now,
+      }, { onConflict: 'id' })
   }
 
   // Cleanup
 
-  clearAllData(userId: string): void {
-    const db = getDb()
-    db.run('DELETE FROM whatsapp_messages WHERE user_id = ?', [userId])
-    db.run('DELETE FROM whatsapp_chats WHERE user_id = ?', [userId])
-    db.run('DELETE FROM whatsapp_contacts WHERE user_id = ?', [userId])
-    saveToDisk()
+  async clearAllData(userId: string): Promise<void> {
+    await getSupabase().from('whatsapp_messages').delete().eq('user_id', userId)
+    await getSupabase().from('whatsapp_chats').delete().eq('user_id', userId)
+    await getSupabase().from('whatsapp_contacts').delete().eq('user_id', userId)
     console.log(`[WhatsApp Store] Cleared all data for user ${userId}`)
   }
 
   // Helper
 
   private rowToMessageInfo(row: any): MessageInfo {
-    // Try to parse raw_message if available for full data
     if (row.raw_message) {
       try {
         return JSON.parse(row.raw_message)

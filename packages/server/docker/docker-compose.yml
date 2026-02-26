@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  sandbox:
+    build: .
+    image: buddy-sandbox:latest
+    container_name: buddy-sandbox
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount local workspace directory to container
+      - ~/openwork-workspace:/home/user
+    environment:
+      - WORKSPACE=/home/user
+    restart: unless-stopped

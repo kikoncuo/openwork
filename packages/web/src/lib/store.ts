@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Thread, ModelConfig, Provider, Agent } from '@/types'
+import type { Thread, ModelConfig, Provider, Agent, UserTier } from '@/types'
 
 interface AppState {
   // Agents
@@ -14,6 +14,9 @@ interface AppState {
   models: ModelConfig[]
   providers: Provider[]
 
+  // User tier (for tier-based model management)
+  userTier: UserTier | null
+
   // Right panel state (UI state, not thread data)
   rightPanelTab: 'todos' | 'files' | 'subagents'
 
@@ -21,6 +24,15 @@ interface AppState {
   settingsOpen: boolean
   /** null = create new agent, string = edit specific agent, undefined = edit active agent */
   settingsAgentId: string | null | undefined
+  /** Global settings dialog state */
+  globalSettingsOpen: boolean
+  /** Agent settings dialog state */
+  agentSettingsOpen: boolean
+  /** Agent ID for agent settings dialog */
+  agentSettingsAgentId: string | null
+
+  // Files panel mode (files view or terminal view)
+  filesPanelMode: 'files' | 'terminal'
 
   // Sidebar state
   sidebarCollapsed: boolean
@@ -34,6 +46,12 @@ interface AppState {
   /** Open settings. null = create new agent, string = edit specific agent, undefined = edit active agent */
   openSettings: (agentId?: string | null) => void
   closeSettings: () => void
+  /** Open global settings dialog */
+  openGlobalSettings: () => void
+  closeGlobalSettings: () => void
+  /** Open agent settings dialog for a specific agent */
+  openAgentSettings: (agentId: string) => void
+  closeAgentSettings: () => void
 
   // Thread actions
   loadThreads: () => Promise<void>
@@ -51,11 +69,15 @@ interface AppState {
   // Model actions
   loadModels: () => Promise<void>
   loadProviders: () => Promise<void>
-  setApiKey: (providerId: string, apiKey: string) => Promise<void>
-  deleteApiKey: (providerId: string) => Promise<void>
+
+  // Tier actions
+  loadUserTier: () => Promise<void>
 
   // Panel actions
   setRightPanelTab: (tab: 'todos' | 'files' | 'subagents') => void
+
+  // Files panel mode actions
+  setFilesPanelMode: (mode: 'files' | 'terminal') => void
 
   // Deprecated - use openSettings/closeSettings instead
   setSettingsOpen: (open: boolean) => void
@@ -73,9 +95,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   currentThreadId: null,
   models: [],
   providers: [],
+  userTier: null,
   rightPanelTab: 'todos',
   settingsOpen: false,
   settingsAgentId: undefined,
+  globalSettingsOpen: false,
+  agentSettingsOpen: false,
+  agentSettingsAgentId: null,
+  filesPanelMode: 'files',
   sidebarCollapsed: false,
 
   // Agent actions
@@ -90,15 +117,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     }))
     set({ agents })
 
-    // Set active agent to default if none selected
+    // Set active agent: restore from localStorage, then fallback to default
     if (!get().activeAgentId && agents.length > 0) {
-      const defaultAgent = agents.find((a) => a.is_default) || agents[0]
+      const savedAgentId = localStorage.getItem('activeAgentId')
+      const savedAgent = savedAgentId ? agents.find((a) => a.agent_id === savedAgentId) : null
+      const defaultAgent = savedAgent || agents.find((a) => a.is_default) || agents[0]
       set({ activeAgentId: defaultAgent.agent_id })
     }
   },
 
   setActiveAgent: (agentId: string) => {
     set({ activeAgentId: agentId })
+    localStorage.setItem('activeAgentId', agentId)
   },
 
   createAgent: async (input) => {
@@ -113,6 +143,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       agents: [...state.agents, agent],
       activeAgentId: agent.agent_id, // Switch to newly created agent
     }))
+    localStorage.setItem('activeAgentId', agent.agent_id)
     return agent
   },
 
@@ -134,6 +165,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   deleteAgent: async (agentId) => {
     const result = await window.api.agents.delete(agentId)
     if (result.success) {
+      const wasActive = get().activeAgentId === agentId
       set((state) => {
         const agents = state.agents.filter((a) => a.agent_id !== agentId)
         // If deleted agent was active, switch to default
@@ -143,6 +175,15 @@ export const useAppStore = create<AppState>((set, get) => ({
             : state.activeAgentId
         return { agents, activeAgentId: newActiveId }
       })
+      // Persist new active agent if it changed
+      if (wasActive) {
+        const newActiveId = get().activeAgentId
+        if (newActiveId) {
+          localStorage.setItem('activeAgentId', newActiveId)
+        } else {
+          localStorage.removeItem('activeAgentId')
+        }
+      }
       // Reload threads to update agent assignments
       await get().loadThreads()
     }
@@ -157,14 +198,32 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ settingsOpen: false, settingsAgentId: undefined })
   },
 
+  openGlobalSettings: () => {
+    set({ globalSettingsOpen: true })
+  },
+
+  closeGlobalSettings: () => {
+    set({ globalSettingsOpen: false })
+  },
+
+  openAgentSettings: (agentId: string) => {
+    set({ agentSettingsOpen: true, agentSettingsAgentId: agentId })
+  },
+
+  closeAgentSettings: () => {
+    set({ agentSettingsOpen: false, agentSettingsAgentId: null })
+  },
+
   // Thread actions
   loadThreads: async () => {
     const threads = await window.api.threads.list()
     set({ threads })
 
     // Select first thread if none selected
+    // Note: Don't call selectThread here - we want to keep the localStorage-restored agent
+    // selectThread syncs agent with thread, which would override the persisted selection
     if (!get().currentThreadId && threads.length > 0) {
-      await get().selectThread(threads[0].thread_id)
+      set({ currentThreadId: threads[0].thread_id })
     }
   },
 
@@ -183,9 +242,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Update currentThreadId - ThreadContext handles per-thread state
     set({ currentThreadId: threadId })
 
+    // Sync activeAgentId with thread's agent
+    const thread = get().threads.find((t) => t.thread_id === threadId)
+    if (thread?.agent_id) {
+      set({ activeAgentId: thread.agent_id })
+      localStorage.setItem('activeAgentId', thread.agent_id)
+    }
+
     // Mark thread as read (clear needs_attention) via API
     try {
-      const thread = get().threads.find(t => t.thread_id === threadId)
       if (thread?.needs_attention) {
         await window.api.threads.update(threadId, { needs_attention: false })
         // Update local state
@@ -299,12 +364,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       const needsAttention = isCurrentThread ? false : (data.needs_attention as boolean | undefined)
 
       const updatedThreads = [...state.threads]
+      const existingThread = updatedThreads[existingIndex]
+
+      // Merge plan_mode into metadata if present in WebSocket data
+      let updatedMetadata = existingThread.metadata
+      if (data.plan_mode !== undefined) {
+        const currentMetadata = (existingThread.metadata as Record<string, unknown>) || {}
+        updatedMetadata = { ...currentMetadata, plan_mode: data.plan_mode }
+      }
+
       updatedThreads[existingIndex] = {
-        ...updatedThreads[existingIndex],
+        ...existingThread,
         ...(data.title !== undefined && { title: data.title as string }),
         ...(data.status !== undefined && { status: data.status as Thread['status'] }),
         ...(needsAttention !== undefined && { needs_attention: needsAttention }),
-        updated_at: data.updated_at ? new Date(data.updated_at as string) : updatedThreads[existingIndex].updated_at
+        ...(updatedMetadata !== existingThread.metadata && { metadata: updatedMetadata }),
+        updated_at: data.updated_at ? new Date(data.updated_at as string) : existingThread.updated_at
       }
 
       return { threads: updatedThreads }
@@ -324,31 +399,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ providers })
   },
 
-  setApiKey: async (providerId: string, apiKey: string) => {
-    console.log('[Store] setApiKey called:', { providerId, keyLength: apiKey.length })
+  // Tier actions
+  loadUserTier: async () => {
     try {
-      await window.api.models.setApiKey(providerId, apiKey)
-      console.log('[Store] API key saved via IPC')
-      // Reload providers and models to update availability
-      await get().loadProviders()
-      await get().loadModels()
-      console.log('[Store] Providers and models reloaded')
+      const tier = await window.api.user.getTier()
+      set({ userTier: tier })
+      console.log('[Store] User tier loaded:', tier.name)
     } catch (e) {
-      console.error('[Store] Failed to set API key:', e)
-      throw e
+      console.error('[Store] Failed to load user tier:', e)
     }
-  },
-
-  deleteApiKey: async (providerId: string) => {
-    await window.api.models.deleteApiKey(providerId)
-    // Reload providers and models to update availability
-    await get().loadProviders()
-    await get().loadModels()
   },
 
   // Panel actions
   setRightPanelTab: (tab: 'todos' | 'files' | 'subagents') => {
     set({ rightPanelTab: tab })
+  },
+
+  // Files panel mode actions
+  setFilesPanelMode: (mode: 'files' | 'terminal') => {
+    set({ filesPanelMode: mode })
   },
 
   // Settings actions (deprecated - use openSettings/closeSettings)

@@ -25,18 +25,20 @@ export function TabBar({ className, threadId: propThreadId }: TabBarProps) {
       "flex items-center h-9 border-b border-border bg-sidebar overflow-x-auto scrollbar-hide",
       className
     )}>
-      {/* Agent Selector - Shows all agents with active indicator */}
-      <div
-        className={cn(
-          "flex items-center px-2 h-full shrink-0 border-r border-border cursor-pointer",
-          activeTab === 'agent'
-            ? "bg-primary/10 border-b-2 border-b-primary"
-            : "hover:bg-background-interactive"
-        )}
-        onClick={() => setActiveTab('agent')}
-      >
-        <AgentSelector />
-      </div>
+      {/* Agent Selector - Shows all agents with active indicator (hidden when files are open) */}
+      {openFiles.length === 0 && (
+        <div
+          className={cn(
+            "flex items-center px-2 h-full shrink-0 border-r border-border cursor-pointer",
+            activeTab === 'agent'
+              ? "bg-primary/10 border-b-2 border-b-primary"
+              : "hover:bg-background-interactive"
+          )}
+          onClick={() => setActiveTab('agent')}
+        >
+          <AgentSelector />
+        </div>
+      )}
 
       {/* File Tabs */}
       {openFiles.map((file) => (

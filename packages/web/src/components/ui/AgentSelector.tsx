@@ -1,4 +1,4 @@
-import { Plus } from 'lucide-react'
+import { Plus, Pencil } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/lib/store'
 import { AgentIconComponent } from '@/lib/agent-icons'
@@ -9,19 +9,16 @@ interface AgentSelectorProps {
 }
 
 // Individual agent pill/badge
-function AgentPill({ agent, isActive, onClick }: {
+function AgentPill({ agent, isActive, onClick, onEdit }: {
   agent: Agent
   isActive: boolean
   onClick: () => void
+  onEdit: () => void
 }) {
   return (
-    <button
-      onClick={(e) => {
-        e.stopPropagation()
-        onClick()
-      }}
+    <div
       className={cn(
-        "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-sm font-medium transition-all shrink-0",
+        "group flex items-center gap-1.5 px-2.5 py-1 rounded-md text-sm font-medium transition-all shrink-0",
         isActive
           ? "ring-2 ring-offset-1 ring-offset-background"
           : "opacity-70 hover:opacity-100"
@@ -34,14 +31,35 @@ function AgentPill({ agent, isActive, onClick }: {
       }}
       title={agent.name}
     >
-      <AgentIconComponent icon={agent.icon} className="size-3.5" />
-      <span>{agent.name}</span>
-    </button>
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          onClick()
+        }}
+        className="flex items-center gap-1.5"
+      >
+        <AgentIconComponent icon={agent.icon} className="size-3.5" />
+        <span>{agent.name}</span>
+      </button>
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          onEdit()
+        }}
+        className={cn(
+          "ml-1 p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity",
+          isActive ? "hover:bg-white/20" : "hover:bg-black/10"
+        )}
+        title="Edit agent settings"
+      >
+        <Pencil className="size-3" />
+      </button>
+    </div>
   )
 }
 
 export function AgentSelector({ className }: AgentSelectorProps) {
-  const { agents, activeAgentId, setActiveAgent, openSettings } = useAppStore()
+  const { agents, activeAgentId, setActiveAgent, openSettings, openAgentSettings } = useAppStore()
 
   return (
     <div className={cn("flex items-center gap-1.5", className)}>
@@ -51,6 +69,7 @@ export function AgentSelector({ className }: AgentSelectorProps) {
           agent={agent}
           isActive={activeAgentId === agent.agent_id}
           onClick={() => setActiveAgent(agent.agent_id)}
+          onEdit={() => openAgentSettings(agent.agent_id)}
         />
       ))}
 

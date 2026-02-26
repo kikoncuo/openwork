@@ -11,7 +11,8 @@ import {
 } from 'react'
 import { useStream } from '@langchain/langgraph-sdk/react'
 import { ElectronIPCTransport } from './electron-transport'
-import type { Message, Todo, FileInfo, Subagent, HITLRequest } from '@/types'
+import type { Message, Todo, FileInfo, Subagent, HITLRequest, TerminalInstance, TerminalEntry } from '@/types'
+import { useAppStore } from '@/lib/store'
 
 // DeepAgent type is opaque from the frontend's perspective
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -46,6 +47,10 @@ export interface ThreadState {
   activeTab: 'agent' | string
   fileContents: Record<string, string>
   tokenUsage: TokenUsage | null
+  planMode: boolean
+  inputText: string
+  terminals: TerminalInstance[]
+  activeTerminalId: string | null
 }
 
 // Stream instance type
@@ -73,6 +78,14 @@ export interface ThreadActions {
   closeFile: (path: string) => void
   setActiveTab: (tab: 'agent' | string) => void
   setFileContents: (path: string, content: string) => void
+  setPlanMode: (enabled: boolean) => void
+  setInputText: (text: string) => void
+  createTerminal: () => string
+  closeTerminal: (terminalId: string) => void
+  setActiveTerminal: (terminalId: string | null) => void
+  appendTerminalEntry: (terminalId: string, entry: TerminalEntry) => void
+  updateTerminalEntry: (terminalId: string, entryId: string, updates: Partial<TerminalEntry>) => void
+  setTerminalRunning: (terminalId: string, running: boolean) => void
 }
 
 // Context value
@@ -98,7 +111,11 @@ const createDefaultThreadState = (): ThreadState => ({
   openFiles: [],
   activeTab: 'agent',
   fileContents: {},
-  tokenUsage: null
+  tokenUsage: null,
+  planMode: false,
+  inputText: '',
+  terminals: [],
+  activeTerminalId: null
 })
 
 const defaultStreamData: StreamData = {
@@ -299,7 +316,7 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
 
     // Check for authentication errors
     if (errorMessage.includes('401') || errorMessage.includes('invalid_api_key') || errorMessage.includes('authentication')) {
-      return 'Authentication failed. Please check your API key in settings.'
+      return 'We apologize, but there is a problem with the service. Please try again later.'
     }
 
     // Return the original message for other errors
@@ -462,6 +479,71 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
           updateThreadState(threadId, (state) => ({
             fileContents: { ...state.fileContents, [path]: content }
           }))
+        },
+        setPlanMode: (enabled: boolean) => {
+          updateThreadState(threadId, () => ({ planMode: enabled }))
+        },
+        setInputText: (text: string) => {
+          updateThreadState(threadId, () => ({ inputText: text }))
+        },
+        createTerminal: () => {
+          const id = crypto.randomUUID()
+          updateThreadState(threadId, (state) => {
+            const name = `Terminal ${state.terminals.length + 1}`
+            const terminal: TerminalInstance = {
+              id,
+              name,
+              cwd: '/home/user',
+              history: [],
+              isRunning: false
+            }
+            return {
+              terminals: [...state.terminals, terminal],
+              activeTerminalId: id
+            }
+          })
+          return id
+        },
+        closeTerminal: (terminalId: string) => {
+          updateThreadState(threadId, (state) => {
+            const newTerminals = state.terminals.filter((t) => t.id !== terminalId)
+            let newActiveId = state.activeTerminalId
+            if (state.activeTerminalId === terminalId) {
+              newActiveId = newTerminals.length > 0 ? newTerminals[newTerminals.length - 1].id : null
+            }
+            return { terminals: newTerminals, activeTerminalId: newActiveId }
+          })
+        },
+        setActiveTerminal: (terminalId: string | null) => {
+          updateThreadState(threadId, () => ({ activeTerminalId: terminalId }))
+        },
+        appendTerminalEntry: (terminalId: string, entry: TerminalEntry) => {
+          updateThreadState(threadId, (state) => ({
+            terminals: state.terminals.map((t) =>
+              t.id === terminalId ? { ...t, history: [...t.history, entry] } : t
+            )
+          }))
+        },
+        updateTerminalEntry: (terminalId: string, entryId: string, updates: Partial<TerminalEntry>) => {
+          updateThreadState(threadId, (state) => ({
+            terminals: state.terminals.map((t) =>
+              t.id === terminalId
+                ? {
+                    ...t,
+                    history: t.history.map((e) =>
+                      e.id === entryId ? { ...e, ...updates } : e
+                    )
+                  }
+                : t
+            )
+          }))
+        },
+        setTerminalRunning: (terminalId: string, running: boolean) => {
+          updateThreadState(threadId, (state) => ({
+            terminals: state.terminals.map((t) =>
+              t.id === terminalId ? { ...t, isRunning: running } : t
+            )
+          }))
         }
       }
 
@@ -474,6 +556,19 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
   const loadThreadHistory = useCallback(
     async (threadId: string) => {
       const actions = getThreadActions(threadId)
+
+      // Load plan_mode from thread metadata for reload persistence
+      try {
+        const thread = await window.api.threads.get(threadId)
+        if (thread?.metadata && typeof thread.metadata === 'object') {
+          const planMode = (thread.metadata as Record<string, unknown>).plan_mode
+          if (typeof planMode === 'boolean') {
+            actions.setPlanMode(planMode)
+          }
+        }
+      } catch (error) {
+        console.error('[ThreadContext] Failed to load thread metadata for plan_mode:', error)
+      }
 
       // Load thread state (messages, todos) from checkpointer
       try {
@@ -795,6 +890,21 @@ export function useCurrentThread(threadId: string) {
 
   const state = context.getThreadState(threadId)
   const actions = context.getThreadActions(threadId)
+
+  // Sync planMode from store thread metadata (for switch_to_act WebSocket updates)
+  const threadMetadata = useAppStore((s) => {
+    const t = s.threads.find((t) => t.thread_id === threadId)
+    return t?.metadata
+  })
+
+  useEffect(() => {
+    if (threadMetadata && typeof threadMetadata === 'object') {
+      const metaPlanMode = (threadMetadata as Record<string, unknown>).plan_mode
+      if (typeof metaPlanMode === 'boolean' && metaPlanMode !== state.planMode) {
+        actions.setPlanMode(metaPlanMode)
+      }
+    }
+  }, [threadMetadata, state.planMode, actions])
 
   return { ...state, ...actions }
 }

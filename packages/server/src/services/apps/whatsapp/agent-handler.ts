@@ -86,13 +86,13 @@ async function getOrCreateThreadForJid(
   agentId: string,
   timeoutMinutes: number
 ): Promise<string> {
-  const existingMapping = getThreadForJid(userId, jid)
+  const existingMapping = await getThreadForJid(userId, jid)
 
   if (existingMapping) {
     // Check if the mapping is still active (within timeout)
     if (isThreadMappingActive(existingMapping, timeoutMinutes)) {
       // Update last activity and reuse thread
-      updateThreadMappingActivity(userId, jid)
+      await updateThreadMappingActivity(userId, jid)
       console.log(`[WhatsApp Agent] Reusing thread ${existingMapping.thread_id} for JID ${jid}`)
       return existingMapping.thread_id
     } else {
@@ -102,7 +102,7 @@ async function getOrCreateThreadForJid(
 
   // Create a new thread
   const threadId = uuidv4()
-  const thread = createThread(threadId, {
+  const thread = await createThread(threadId, {
     agentId,
     userId,
     source: 'whatsapp',
@@ -112,10 +112,10 @@ async function getOrCreateThreadForJid(
 
   // Set initial title based on contact name
   const title = `WhatsApp: ${contactName}`
-  updateThread(threadId, { title })
+  await updateThread(threadId, { title })
 
   // Create or update thread mapping
-  updateThreadMapping(userId, jid, threadId)
+  await updateThreadMapping(userId, jid, threadId)
 
   // Broadcast thread:created event to the user's connected clients
   broadcastToUser(userId, 'thread:created', {
@@ -337,7 +337,7 @@ async function sendTypingIndicator(userId: string, jid: string, isTyping: boolea
  * This is the internal function that does the actual work.
  */
 async function processMessage(userId: string, message: MessageInfo): Promise<void> {
-  const config = getWhatsAppAgentConfig(userId)
+  const config = await getWhatsAppAgentConfig(userId)
 
   // Check if auto-agent is enabled
   if (!config || !config.enabled || !config.agent_id) {
@@ -350,7 +350,7 @@ async function processMessage(userId: string, message: MessageInfo): Promise<voi
 
   // Get contact info for the sender
   const messageStore = getMessageStore()
-  const contacts = messageStore.getContacts(userId)
+  const contacts = await messageStore.getContacts(userId)
   const contact = contacts.find(c => c.jid === message.from) || null
   const contactName = contact?.name || contact?.pushName || message.senderName || message.from.split('@')[0]
 
@@ -433,7 +433,7 @@ export async function handleIncomingMessage(userId: string, message: MessageInfo
 /**
  * Check if auto-agent is enabled for a user.
  */
-export function isAutoAgentEnabled(userId: string): boolean {
-  const config = getWhatsAppAgentConfig(userId)
+export async function isAutoAgentEnabled(userId: string): Promise<boolean> {
+  const config = await getWhatsAppAgentConfig(userId)
   return !!(config?.enabled && config.agent_id)
 }

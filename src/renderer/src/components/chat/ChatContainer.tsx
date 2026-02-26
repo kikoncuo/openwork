@@ -30,7 +30,6 @@ interface ChatContainerProps {
 }
 
 export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Element {
-  const [input, setInput] = useState('')
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
@@ -55,7 +54,9 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     setPendingApproval,
     appendMessage,
     setError,
-    clearError
+    clearError,
+    inputText,
+    setInputText
   } = useCurrentThread(threadId)
 
   // Get the stream data via subscription - reactive updates without re-rendering provider
@@ -272,7 +273,7 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
 
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
-    if (!input.trim() || isLoading || !stream) return
+    if (!inputText.trim() || isLoading || !stream) return
 
     if (!workspacePath) {
       setError('Please select a workspace folder before sending messages.')
@@ -287,8 +288,8 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
       setPendingApproval(null)
     }
 
-    const message = input.trim()
-    setInput('')
+    const message = inputText.trim()
+    setInputText('')
 
     const isFirstMessage = threadMessages.length === 0
 
@@ -340,7 +341,7 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
 
   useEffect(() => {
     adjustTextareaHeight()
-  }, [input])
+  }, [inputText])
 
   const handleCancel = async (): Promise<void> => {
     await stream?.stop()
@@ -441,8 +442,8 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
             <div className="flex items-end gap-2">
               <textarea
                 ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Message..."
                 disabled={isLoading}
@@ -456,7 +457,7 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
                     <Square className="size-4" />
                   </Button>
                 ) : (
-                  <Button type="submit" variant="default" size="icon" disabled={!input.trim()} className="rounded-md">
+                  <Button type="submit" variant="default" size="icon" disabled={!inputText.trim()} className="rounded-md">
                     <Send className="size-4" />
                   </Button>
                 )}

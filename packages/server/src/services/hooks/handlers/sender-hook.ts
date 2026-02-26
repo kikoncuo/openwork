@@ -20,11 +20,11 @@ export const senderHookHandler: HookHandler = {
   id: 'builtin:sender',
   name: 'Message Sender',
   eventTypes: ['agent:response'],
-  enabled: true,
+  enabled: false,
   priority: 200,  // Run after agent hook
   handler: async (event: HookEvent): Promise<HookResult> => {
     const { userId, source, payload } = event
-    const responsePayload = payload as AgentResponsePayload
+    const responsePayload = payload as unknown as AgentResponsePayload
 
     if (!responsePayload?.response || !responsePayload?.jid) {
       console.warn(`[SenderHook] Missing response or jid in payload`)

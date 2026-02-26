@@ -420,3 +420,39 @@
 .shiki-content .line:hover {
   background-color: var(--background-interactive);
 }
+
+/* react-datasheet-grid dark theme overrides */
+.csv-grid-dark {
+  --dsg-border-color: var(--border-emphasis);
+  --dsg-selection-border-color: var(--primary);
+  --dsg-selection-background-color: rgba(139, 92, 246, 0.15);
+  --dsg-selection-disabled-border-color: var(--muted-foreground);
+  --dsg-selection-disabled-background-color: rgba(255, 255, 255, 0.05);
+  --dsg-header-text-color: var(--muted-foreground);
+  --dsg-header-active-text-color: var(--foreground);
+  --dsg-cell-background-color: var(--background);
+  --dsg-cell-disabled-background-color: var(--background-elevated);
+  --dsg-scroll-shadow-color: rgba(0, 0, 0, 0.5);
+}
+
+.csv-grid-dark .dsg-container {
+  color: var(--foreground);
+  background: var(--background);
+  border-color: var(--border-emphasis);
+}
+
+.csv-grid-dark .dsg-cell {
+  border-color: var(--border);
+  box-shadow: 1px 1px var(--border);
+}
+
+.csv-grid-dark .dsg-cell-header,
+.csv-grid-dark .dsg-cell-gutter {
+  background: var(--background-elevated);
+}
+
+.csv-grid-dark .dsg-input {
+  color: var(--foreground);
+  background: var(--background);
+  caret-color: var(--foreground);
+}

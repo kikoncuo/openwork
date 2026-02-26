@@ -22,7 +22,7 @@ declare global {
  * Middleware that requires authentication
  * Returns 401 if no valid token is provided
  */
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = extractTokenFromHeader(req.headers.authorization)
 
   if (!token) {
@@ -34,7 +34,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     const payload = verifyToken(token)
 
     // Verify user still exists
-    const user = getUserById(payload.userId)
+    const user = await getUserById(payload.userId)
     if (!user) {
       res.status(401).json({ error: 'User not found' })
       return
@@ -57,7 +57,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
  * Middleware that optionally authenticates
  * Attaches user to request if valid token is provided, but doesn't fail if not
  */
-export function optionalAuth(req: Request, res: Response, next: NextFunction): void {
+export async function optionalAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = extractTokenFromHeader(req.headers.authorization)
 
   if (!token) {
@@ -70,7 +70,7 @@ export function optionalAuth(req: Request, res: Response, next: NextFunction): v
     const payload = verifyToken(token)
 
     // Verify user still exists
-    const user = getUserById(payload.userId)
+    const user = await getUserById(payload.userId)
     if (user) {
       req.user = {
         userId: payload.userId,
@@ -88,10 +88,10 @@ export function optionalAuth(req: Request, res: Response, next: NextFunction): v
  * Helper to verify socket.io connections with JWT
  * Used in websocket handlers
  */
-export function verifySocketAuth(token: string): JwtPayload | null {
+export async function verifySocketAuth(token: string): Promise<JwtPayload | null> {
   try {
     const payload = verifyToken(token)
-    const user = getUserById(payload.userId)
+    const user = await getUserById(payload.userId)
     if (!user) return null
     return payload
   } catch {

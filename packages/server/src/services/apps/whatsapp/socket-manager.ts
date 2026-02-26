@@ -342,12 +342,12 @@ class WhatsAppSocketManager {
         })
 
         // Handle contacts
-        sock.ev.on('contacts.upsert', (contacts: Contact[]) => {
+        sock.ev.on('contacts.upsert', async (contacts: Contact[]) => {
           console.log(`[WhatsApp] User ${userId} received ${contacts.length} contacts`)
           for (const contact of contacts) {
             session.store.contacts[contact.id] = contact
           }
-          this.persistContacts(userId)
+          await this.persistContacts(userId)
         })
 
         sock.ev.on('contacts.update', (updates: Partial<Contact>[]) => {
@@ -359,7 +359,7 @@ class WhatsAppSocketManager {
         })
 
         // Handle chats
-        sock.ev.on('chats.upsert', (chats: Chat[]) => {
+        sock.ev.on('chats.upsert', async (chats: Chat[]) => {
           console.log(`[WhatsApp] User ${userId} received ${chats.length} chats`)
           for (const chat of chats) {
             const existingIndex = session.store.chats.findIndex((c: Chat) => c.id === chat.id)
@@ -369,7 +369,7 @@ class WhatsAppSocketManager {
               session.store.chats.push(chat)
             }
           }
-          this.persistChats(userId)
+          await this.persistChats(userId)
         })
 
         sock.ev.on('chats.update', (updates: Partial<Chat>[]) => {
@@ -382,7 +382,7 @@ class WhatsAppSocketManager {
         })
 
         // Handle history sync
-        sock.ev.on('messaging-history.set', ({ chats, contacts, messages, isLatest }: any) => {
+        sock.ev.on('messaging-history.set', async ({ chats, contacts, messages, isLatest }: any) => {
           console.log(`[WhatsApp] User ${userId} history sync: ${chats?.length || 0} chats, ${contacts?.length || 0} contacts, ${messages?.length || 0} messages`)
 
           if (contacts) {
@@ -406,7 +406,7 @@ class WhatsAppSocketManager {
             const messageStore = getMessageStore()
             for (const msg of messages) {
               if (msg.key?.id) {
-                messageStore.saveMessage(this.formatMessage(msg), userId)
+                await messageStore.saveMessage(this.formatMessage(msg), userId)
               }
             }
           }
@@ -414,8 +414,8 @@ class WhatsAppSocketManager {
           if (isLatest) {
             session.historySyncComplete = true
             console.log(`[WhatsApp] User ${userId} history sync complete`)
-            this.persistContacts(userId)
-            this.persistChats(userId)
+            await this.persistContacts(userId)
+            await this.persistChats(userId)
           }
         })
 
@@ -427,7 +427,7 @@ class WhatsAppSocketManager {
             if (msg.key?.id) {
               const formattedMessage = this.formatMessage(msg)
               console.log(`[WhatsApp] User ${userId} message: fromMe=${formattedMessage.fromMe}, from=${formattedMessage.from}, content=${formattedMessage.content?.substring(0, 50)}`)
-              messageStore.saveMessage(formattedMessage, userId)
+              await messageStore.saveMessage(formattedMessage, userId)
               this.extractChatAndContactFromMessage(session, msg)
 
               // Trigger agent if configured and not fromMe
@@ -440,7 +440,7 @@ class WhatsAppSocketManager {
           session.lastActivity = new Date()
           this.lastActivityTimes.set(userId, Date.now())
           // Persist chats to database so they survive server restarts
-          this.persistChats(userId)
+          await this.persistChats(userId)
         })
 
       } catch (error) {
@@ -597,7 +597,7 @@ class WhatsAppSocketManager {
       // Save to store
       if (sent?.key?.id) {
         const messageStore = getMessageStore()
-        messageStore.saveMessage({
+        await messageStore.saveMessage({
           id: sent.key.id,
           to: sent.key.remoteJid || to,
           from: session.phoneNumber ? `${session.phoneNumber}@s.whatsapp.net` : (session.socket.user?.id || ''),
@@ -621,15 +621,15 @@ class WhatsAppSocketManager {
 
   // ============= DATA ACCESS =============
 
-  getContacts(userId: string, query?: string): ContactInfo[] {
+  async getContacts(userId: string, query?: string): Promise<ContactInfo[]> {
     const messageStore = getMessageStore()
-    return messageStore.getContacts(userId, query)
+    return await messageStore.getContacts(userId, query)
   }
 
-  getChats(userId: string, limit = 50): ChatInfo[] {
+  async getChats(userId: string, limit = 50): Promise<ChatInfo[]> {
     // First try database
     const messageStore = getMessageStore()
-    const dbChats = messageStore.getChats(userId, limit)
+    const dbChats = await messageStore.getChats(userId, limit)
 
     console.log(`[WhatsApp] getChats for user ${userId}: DB has ${dbChats.length} chats`)
 
@@ -647,7 +647,7 @@ class WhatsAppSocketManager {
 
     const storeContacts = session.store.contacts || {}
     // Also get contacts from database for name lookup
-    const dbContacts = messageStore.getContacts(userId)
+    const dbContacts = await messageStore.getContacts(userId)
     const dbContactMap = new Map(dbContacts.map(c => [c.jid, c]))
 
     const sortedChats = [...session.store.chats]
@@ -658,7 +658,7 @@ class WhatsAppSocketManager {
       })
       .slice(0, limit)
 
-    return sortedChats.map((chat: any) => {
+    return sortedChats.map((chat: any): ChatInfo => {
       // Look up name: 1) in-memory contacts, 2) database contacts, 3) chat.name, 4) JID
       let name: string | undefined
 
@@ -672,16 +672,16 @@ class WhatsAppSocketManager {
       if (!name) {
         const dbContact = dbContactMap.get(chat.id)
         if (dbContact) {
-          name = dbContact.name || dbContact.pushName
+          name = dbContact.name || dbContact.pushName || undefined
         }
       }
 
       // Fallback to chat.name or JID
-      name = name || chat.name || chat.id.split('@')[0]
+      const resolvedName: string = name || chat.name || chat.id.split('@')[0]
 
       return {
         jid: chat.id,
-        name,
+        name: resolvedName,
         isGroup: chat.id.endsWith('@g.us'),
         lastMessageTime: this.toNumber(chat.conversationTimestamp),
         unreadCount: chat.unreadCount || 0,
@@ -689,14 +689,14 @@ class WhatsAppSocketManager {
     })
   }
 
-  searchMessages(userId: string, query: string, chatJid?: string, limit?: number): MessageInfo[] {
+  async searchMessages(userId: string, query: string, chatJid?: string, limit?: number): Promise<MessageInfo[]> {
     const messageStore = getMessageStore()
-    return messageStore.searchMessages(query, userId, chatJid, limit)
+    return await messageStore.searchMessages(query, userId, chatJid, limit)
   }
 
-  getMessageHistory(userId: string, chatJid: string, limit?: number): MessageInfo[] {
+  async getMessageHistory(userId: string, chatJid: string, limit?: number): Promise<MessageInfo[]> {
     const messageStore = getMessageStore()
-    return messageStore.getMessages(chatJid, userId, limit)
+    return await messageStore.getMessages(chatJid, userId, limit)
   }
 
   // ============= EVENT SUBSCRIPTION =============
@@ -751,23 +751,23 @@ class WhatsAppSocketManager {
 
   // ============= HELPERS =============
 
-  private persistContacts(userId: string) {
+  private async persistContacts(userId: string) {
     const session = this.getSession(userId)
     if (!session) return
 
     const messageStore = getMessageStore()
-    Object.values(session.store.contacts).forEach(contact => {
-      messageStore.saveContact({
+    for (const contact of Object.values(session.store.contacts)) {
+      await messageStore.saveContact({
         jid: contact.id,
         name: contact.name || contact.notify || '',
         pushName: contact.notify || null,
         phoneNumber: contact.id.split('@')[0],
         isGroup: contact.id.endsWith('@g.us'),
       }, userId)
-    })
+    }
   }
 
-  private persistChats(userId: string) {
+  private async persistChats(userId: string) {
     const session = this.getSession(userId)
     if (!session) return
 
@@ -780,7 +780,7 @@ class WhatsAppSocketManager {
     const storeContacts = session.store.contacts || {}
 
     let savedCount = 0
-    session.store.chats.forEach((chat: Chat) => {
+    for (const chat of session.store.chats) {
       try {
         // Look up name from contacts store (works for both contacts and groups)
         let name: string | undefined
@@ -791,7 +791,7 @@ class WhatsAppSocketManager {
         // Fallback to chat.name, then empty string
         name = name || chat.name || ''
 
-        messageStore.saveChat({
+        await messageStore.saveChat({
           jid: chat.id,
           name,
           isGroup: chat.id.endsWith('@g.us'),
@@ -802,7 +802,7 @@ class WhatsAppSocketManager {
       } catch (err) {
         console.error(`[WhatsApp] Error saving chat ${chat.id}:`, err)
       }
-    })
+    }
     console.log(`[WhatsApp] persistChats: saved ${savedCount}/${chatCount} chats`)
   }
 
@@ -876,7 +876,7 @@ class WhatsAppSocketManager {
     try {
       // Get contact info for the sender
       const messageStore = getMessageStore()
-      const contacts = messageStore.getContacts(userId)
+      const contacts = await messageStore.getContacts(userId)
       const contact = contacts.find(c => c.jid === message.from) || null
       const contactName = contact?.name || contact?.pushName || message.senderName || message.from.split('@')[0]
 

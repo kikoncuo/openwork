@@ -1,10 +1,11 @@
 import { v4 as uuidv4 } from 'uuid'
-import { getDb, saveToDisk, Agent, AgentConfig } from './index.js'
+import { getSupabase } from './supabase-client.js'
+import type { Agent, AgentConfig, AgentToolConfig } from './index.js'
 import { getCustomPrompt, getLearnedInsights } from '../storage.js'
 import { getMcpServers, getToolConfigs } from '../settings.js'
 
 // Re-export types
-export type { Agent, AgentConfig }
+export type { Agent, AgentConfig, AgentToolConfig }
 
 // Agent icon types
 export type AgentIcon = 'bot' | 'sparkles' | 'code' | 'pen' | 'search' | 'terminal' | 'brain' | 'shield'
@@ -25,75 +26,58 @@ export const AGENT_COLORS = [
 
 // ============= AGENT CRUD =============
 
-export function getAllAgents(): Agent[] {
-  const db = getDb()
-  const stmt = db.prepare('SELECT * FROM agents ORDER BY is_default DESC, created_at ASC')
-  const agents: Agent[] = []
-
-  while (stmt.step()) {
-    agents.push(stmt.getAsObject() as unknown as Agent)
-  }
-  stmt.free()
-
-  return agents
+export async function getAllAgents(): Promise<Agent[]> {
+  const { data, error } = await getSupabase()
+    .from('agents')
+    .select('*')
+    .order('is_default', { ascending: false })
+    .order('created_at', { ascending: true })
+  if (error) throw new Error(`getAllAgents: ${error.message}`)
+  return (data || []) as unknown as Agent[]
 }
 
-export function getAgent(agentId: string): Agent | null {
-  const db = getDb()
-  const stmt = db.prepare('SELECT * FROM agents WHERE agent_id = ?')
-  stmt.bind([agentId])
-
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const agent = stmt.getAsObject() as unknown as Agent
-  stmt.free()
-  return agent
+export async function getAgent(agentId: string): Promise<Agent | null> {
+  const { data, error } = await getSupabase()
+    .from('agents')
+    .select('*')
+    .eq('agent_id', agentId)
+    .single()
+  if (error || !data) return null
+  return data as unknown as Agent
 }
 
-export function getDefaultAgent(): Agent | null {
-  const db = getDb()
-  const stmt = db.prepare('SELECT * FROM agents WHERE is_default = 1')
-
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const agent = stmt.getAsObject() as unknown as Agent
-  stmt.free()
-  return agent
+export async function getDefaultAgent(): Promise<Agent | null> {
+  const { data, error } = await getSupabase()
+    .from('agents')
+    .select('*')
+    .eq('is_default', 1)
+    .limit(1)
+    .single()
+  if (error || !data) return null
+  return data as unknown as Agent
 }
 
-export function getAgentsByUserId(userId: string): Agent[] {
-  const db = getDb()
-  const stmt = db.prepare('SELECT * FROM agents WHERE user_id = ? ORDER BY is_default DESC, created_at ASC')
-  stmt.bind([userId])
-  const agents: Agent[] = []
-
-  while (stmt.step()) {
-    agents.push(stmt.getAsObject() as unknown as Agent)
-  }
-  stmt.free()
-
-  return agents
+export async function getAgentsByUserId(userId: string): Promise<Agent[]> {
+  const { data, error } = await getSupabase()
+    .from('agents')
+    .select('*')
+    .eq('user_id', userId)
+    .order('is_default', { ascending: false })
+    .order('created_at', { ascending: true })
+  if (error) throw new Error(`getAgentsByUserId: ${error.message}`)
+  return (data || []) as unknown as Agent[]
 }
 
-export function getDefaultAgentForUser(userId: string): Agent | null {
-  const db = getDb()
-  const stmt = db.prepare('SELECT * FROM agents WHERE user_id = ? AND is_default = 1')
-  stmt.bind([userId])
-
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const agent = stmt.getAsObject() as unknown as Agent
-  stmt.free()
-  return agent
+export async function getDefaultAgentForUser(userId: string): Promise<Agent | null> {
+  const { data, error } = await getSupabase()
+    .from('agents')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('is_default', 1)
+    .limit(1)
+    .single()
+  if (error || !data) return null
+  return data as unknown as Agent
 }
 
 export interface CreateAgentInput {
@@ -105,8 +89,7 @@ export interface CreateAgentInput {
   user_id?: string
 }
 
-export function createAgent(input: CreateAgentInput): Agent {
-  const db = getDb()
+export async function createAgent(input: CreateAgentInput): Promise<Agent> {
   const now = Date.now()
   const agentId = uuidv4()
 
@@ -115,7 +98,7 @@ export function createAgent(input: CreateAgentInput): Agent {
     name: input.name,
     color: input.color || '#8B5CF6',
     icon: input.icon || 'bot',
-    model_default: input.model_default || 'claude-sonnet-4-5-20250929',
+    model_default: input.model_default || 'claude-opus-4-5-20251101',
     is_default: input.is_default ? 1 : 0,
     user_id: input.user_id || null,
     e2b_sandbox_id: null,
@@ -123,20 +106,21 @@ export function createAgent(input: CreateAgentInput): Agent {
     updated_at: now,
   }
 
-  db.run(
-    `INSERT INTO agents (agent_id, name, color, icon, model_default, is_default, user_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [agent.agent_id, agent.name, agent.color, agent.icon, agent.model_default, agent.is_default, agent.user_id, agent.created_at, agent.updated_at]
-  )
+  const { error } = await getSupabase().from('agents').insert(agent)
+  if (error) throw new Error(`createAgent: ${error.message}`)
 
   // Create empty config for the agent
-  db.run(
-    `INSERT INTO agent_configs (agent_id, tool_configs, mcp_servers, custom_prompt, learned_insights, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [agentId, null, null, null, null, now]
-  )
+  const { error: configError } = await getSupabase().from('agent_configs').insert({
+    agent_id: agentId,
+    tool_configs: null,
+    mcp_servers: null,
+    custom_prompt: null,
+    learned_insights: null,
+    enabled_skills: null,
+    updated_at: now,
+  })
+  if (configError) throw new Error(`createAgent config: ${configError.message}`)
 
-  saveToDisk()
   return agent
 }
 
@@ -147,44 +131,29 @@ export interface UpdateAgentInput {
   model_default?: string
 }
 
-export function updateAgent(agentId: string, updates: UpdateAgentInput): Agent | null {
-  const db = getDb()
-  const existing = getAgent(agentId)
-
+export async function updateAgent(agentId: string, updates: UpdateAgentInput): Promise<Agent | null> {
+  const existing = await getAgent(agentId)
   if (!existing) return null
 
   const now = Date.now()
-  const setClauses: string[] = ['updated_at = ?']
-  const values: (string | number | null)[] = [now]
+  const row: Record<string, unknown> = { updated_at: now }
 
-  if (updates.name !== undefined) {
-    setClauses.push('name = ?')
-    values.push(updates.name)
-  }
-  if (updates.color !== undefined) {
-    setClauses.push('color = ?')
-    values.push(updates.color)
-  }
-  if (updates.icon !== undefined) {
-    setClauses.push('icon = ?')
-    values.push(updates.icon)
-  }
-  if (updates.model_default !== undefined) {
-    setClauses.push('model_default = ?')
-    values.push(updates.model_default)
-  }
+  if (updates.name !== undefined) row.name = updates.name
+  if (updates.color !== undefined) row.color = updates.color
+  if (updates.icon !== undefined) row.icon = updates.icon
+  if (updates.model_default !== undefined) row.model_default = updates.model_default
 
-  values.push(agentId)
+  const { error } = await getSupabase()
+    .from('agents')
+    .update(row)
+    .eq('agent_id', agentId)
+  if (error) throw new Error(`updateAgent: ${error.message}`)
 
-  db.run(`UPDATE agents SET ${setClauses.join(', ')} WHERE agent_id = ?`, values)
-
-  saveToDisk()
   return getAgent(agentId)
 }
 
-export function deleteAgent(agentId: string): { success: boolean; error?: string; reassignedThreads?: number } {
-  const db = getDb()
-  const agent = getAgent(agentId)
+export async function deleteAgent(agentId: string): Promise<{ success: boolean; error?: string; reassignedThreads?: number }> {
+  const agent = await getAgent(agentId)
 
   if (!agent) {
     return { success: false, error: 'Agent not found' }
@@ -194,46 +163,53 @@ export function deleteAgent(agentId: string): { success: boolean; error?: string
     return { success: false, error: 'Cannot delete the default agent' }
   }
 
-  const defaultAgent = getDefaultAgent()
+  const defaultAgent = await getDefaultAgent()
   if (!defaultAgent) {
     return { success: false, error: 'No default agent found to reassign threads' }
   }
 
   // Count threads that will be reassigned
-  const countResult = db.exec(`SELECT COUNT(*) as count FROM threads WHERE agent_id = ?`, [agentId])
-  const reassignedThreads = countResult[0]?.values?.[0]?.[0] as number || 0
+  const { count } = await getSupabase()
+    .from('threads')
+    .select('*', { count: 'exact', head: true })
+    .eq('agent_id', agentId)
+  const reassignedThreads = count || 0
 
   // Reassign threads to default agent
-  db.run(`UPDATE threads SET agent_id = ? WHERE agent_id = ?`, [defaultAgent.agent_id, agentId])
+  await getSupabase()
+    .from('threads')
+    .update({ agent_id: defaultAgent.agent_id })
+    .eq('agent_id', agentId)
 
   // Delete agent (agent_configs will cascade delete)
-  db.run(`DELETE FROM agents WHERE agent_id = ?`, [agentId])
+  const { error } = await getSupabase()
+    .from('agents')
+    .delete()
+    .eq('agent_id', agentId)
+  if (error) throw new Error(`deleteAgent: ${error.message}`)
 
-  saveToDisk()
   return { success: true, reassignedThreads }
 }
 
-export function getAgentThreadCount(agentId: string): number {
-  const db = getDb()
-  const result = db.exec(`SELECT COUNT(*) as count FROM threads WHERE agent_id = ?`, [agentId])
-  return (result[0]?.values?.[0]?.[0] as number) || 0
+export async function getAgentThreadCount(agentId: string): Promise<number> {
+  const { count, error } = await getSupabase()
+    .from('threads')
+    .select('*', { count: 'exact', head: true })
+    .eq('agent_id', agentId)
+  if (error) return 0
+  return count || 0
 }
 
 // ============= AGENT CONFIG CRUD =============
 
-export function getAgentConfig(agentId: string): AgentConfig | null {
-  const db = getDb()
-  const stmt = db.prepare('SELECT * FROM agent_configs WHERE agent_id = ?')
-  stmt.bind([agentId])
-
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const config = stmt.getAsObject() as unknown as AgentConfig
-  stmt.free()
-  return config
+export async function getAgentConfig(agentId: string): Promise<AgentConfig | null> {
+  const { data, error } = await getSupabase()
+    .from('agent_configs')
+    .select('*')
+    .eq('agent_id', agentId)
+    .single()
+  if (error || !data) return null
+  return data as unknown as AgentConfig
 }
 
 export interface UpdateAgentConfigInput {
@@ -241,71 +217,53 @@ export interface UpdateAgentConfigInput {
   mcp_servers?: unknown[]
   custom_prompt?: string | null
   learned_insights?: unknown[]
+  enabled_skills?: string[]
 }
 
-export function updateAgentConfig(agentId: string, updates: UpdateAgentConfigInput): AgentConfig | null {
-  const db = getDb()
-  const existing = getAgentConfig(agentId)
+export async function updateAgentConfig(agentId: string, updates: UpdateAgentConfigInput): Promise<AgentConfig | null> {
+  const existing = await getAgentConfig(agentId)
 
   if (!existing) {
     // Create config if it doesn't exist
     const now = Date.now()
-    db.run(
-      `INSERT INTO agent_configs (agent_id, tool_configs, mcp_servers, custom_prompt, learned_insights, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        agentId,
-        updates.tool_configs ? JSON.stringify(updates.tool_configs) : null,
-        updates.mcp_servers ? JSON.stringify(updates.mcp_servers) : null,
-        updates.custom_prompt ?? null,
-        updates.learned_insights ? JSON.stringify(updates.learned_insights) : null,
-        now,
-      ]
-    )
+    const { error } = await getSupabase().from('agent_configs').insert({
+      agent_id: agentId,
+      tool_configs: updates.tool_configs ? JSON.stringify(updates.tool_configs) : null,
+      mcp_servers: updates.mcp_servers ? JSON.stringify(updates.mcp_servers) : null,
+      custom_prompt: updates.custom_prompt ?? null,
+      learned_insights: updates.learned_insights ? JSON.stringify(updates.learned_insights) : null,
+      enabled_skills: updates.enabled_skills ? JSON.stringify(updates.enabled_skills) : null,
+      updated_at: now,
+    })
+    if (error) throw new Error(`updateAgentConfig insert: ${error.message}`)
     return getAgentConfig(agentId)
   }
 
   const now = Date.now()
-  const setClauses: string[] = ['updated_at = ?']
-  const values: (string | number | null)[] = [now]
+  const row: Record<string, unknown> = { updated_at: now }
 
-  if (updates.tool_configs !== undefined) {
-    setClauses.push('tool_configs = ?')
-    values.push(JSON.stringify(updates.tool_configs))
-  }
-  if (updates.mcp_servers !== undefined) {
-    setClauses.push('mcp_servers = ?')
-    values.push(JSON.stringify(updates.mcp_servers))
-  }
-  if (updates.custom_prompt !== undefined) {
-    setClauses.push('custom_prompt = ?')
-    values.push(updates.custom_prompt)
-  }
-  if (updates.learned_insights !== undefined) {
-    setClauses.push('learned_insights = ?')
-    values.push(JSON.stringify(updates.learned_insights))
-  }
+  if (updates.tool_configs !== undefined) row.tool_configs = JSON.stringify(updates.tool_configs)
+  if (updates.mcp_servers !== undefined) row.mcp_servers = JSON.stringify(updates.mcp_servers)
+  if (updates.custom_prompt !== undefined) row.custom_prompt = updates.custom_prompt
+  if (updates.learned_insights !== undefined) row.learned_insights = JSON.stringify(updates.learned_insights)
+  if (updates.enabled_skills !== undefined) row.enabled_skills = JSON.stringify(updates.enabled_skills)
 
-  values.push(agentId)
+  const { error } = await getSupabase()
+    .from('agent_configs')
+    .update(row)
+    .eq('agent_id', agentId)
+  if (error) throw new Error(`updateAgentConfig: ${error.message}`)
 
-  db.run(`UPDATE agent_configs SET ${setClauses.join(', ')} WHERE agent_id = ?`, values)
-
-  saveToDisk()
   return getAgentConfig(agentId)
 }
 
 // ============= MIGRATION HELPERS =============
 
-/**
- * Ensure default agent exists, creating it if necessary
- * Returns the default agent
- */
-export function ensureDefaultAgent(): Agent {
-  let defaultAgent = getDefaultAgent()
+export async function ensureDefaultAgent(): Promise<Agent> {
+  let defaultAgent = await getDefaultAgent()
 
   if (!defaultAgent) {
-    // Create the default BUDDY agent
-    defaultAgent = createAgent({
+    defaultAgent = await createAgent({
       name: 'BUDDY',
       color: '#8B5CF6',
       icon: 'bot',
@@ -316,46 +274,38 @@ export function ensureDefaultAgent(): Agent {
   return defaultAgent
 }
 
-/**
- * Assign all threads without an agent to the default agent
- */
-export function assignOrphanedThreadsToDefault(): number {
-  const db = getDb()
-  const defaultAgent = ensureDefaultAgent()
+export async function assignOrphanedThreadsToDefault(): Promise<number> {
+  const defaultAgent = await ensureDefaultAgent()
 
-  // Count orphaned threads
-  const countResult = db.exec(`SELECT COUNT(*) as count FROM threads WHERE agent_id IS NULL`)
-  const count = (countResult[0]?.values?.[0]?.[0] as number) || 0
+  const { count } = await getSupabase()
+    .from('threads')
+    .select('*', { count: 'exact', head: true })
+    .is('agent_id', null)
+  const orphanCount = count || 0
 
-  if (count > 0) {
-    db.run(`UPDATE threads SET agent_id = ? WHERE agent_id IS NULL`, [defaultAgent.agent_id])
-    saveToDisk()
+  if (orphanCount > 0) {
+    await getSupabase()
+      .from('threads')
+      .update({ agent_id: defaultAgent.agent_id })
+      .is('agent_id', null)
   }
 
-  return count
+  return orphanCount
 }
 
-/**
- * Run all agent-related migrations
- * Called during database initialization
- */
 export async function runAgentMigrations(): Promise<void> {
-  // Ensure default agent exists
-  const defaultAgent = ensureDefaultAgent()
+  const defaultAgent = await ensureDefaultAgent()
 
-  // Migrate existing file-based settings to default agent's config
-  const existingConfig = getAgentConfig(defaultAgent.agent_id)
+  const existingConfig = await getAgentConfig(defaultAgent.agent_id)
 
-  // Only migrate if config is empty (first run after upgrade)
   if (existingConfig && !existingConfig.custom_prompt && !existingConfig.learned_insights) {
     const customPrompt = getCustomPrompt()
     const learnedInsights = getLearnedInsights()
     const mcpServers = getMcpServers()
     const toolConfigs = getToolConfigs()
 
-    // Only update if there's something to migrate
     if (customPrompt || learnedInsights.length > 0 || mcpServers.length > 0 || toolConfigs.length > 0) {
-      updateAgentConfig(defaultAgent.agent_id, {
+      await updateAgentConfig(defaultAgent.agent_id, {
         custom_prompt: customPrompt,
         learned_insights: learnedInsights.length > 0 ? learnedInsights : undefined,
         mcp_servers: mcpServers.length > 0 ? mcpServers : undefined,
@@ -365,9 +315,95 @@ export async function runAgentMigrations(): Promise<void> {
     }
   }
 
-  // Assign orphaned threads to default agent
-  const orphanedCount = assignOrphanedThreadsToDefault()
+  const orphanedCount = await assignOrphanedThreadsToDefault()
   if (orphanedCount > 0) {
     console.log(`Assigned ${orphanedCount} orphaned threads to default agent`)
+  }
+}
+
+// ============= AGENT TOOL CONFIG CRUD =============
+
+export interface ToolConfigInput {
+  tool_id: string
+  enabled: boolean
+  require_approval: boolean
+}
+
+export async function getAgentToolConfigs(agentId: string): Promise<AgentToolConfig[]> {
+  const { data, error } = await getSupabase()
+    .from('agent_tool_configs')
+    .select('*')
+    .eq('agent_id', agentId)
+    .order('tool_id', { ascending: true })
+  if (error) throw new Error(`getAgentToolConfigs: ${error.message}`)
+  return (data || []) as unknown as AgentToolConfig[]
+}
+
+export async function upsertAgentToolConfig(
+  agentId: string,
+  toolId: string,
+  config: { enabled: boolean; requireApproval: boolean }
+): Promise<AgentToolConfig> {
+  const now = Date.now()
+
+  const { error } = await getSupabase()
+    .from('agent_tool_configs')
+    .upsert({
+      agent_id: agentId,
+      tool_id: toolId,
+      enabled: config.enabled ? 1 : 0,
+      require_approval: config.requireApproval ? 1 : 0,
+      created_at: now,
+      updated_at: now,
+    }, { onConflict: 'agent_id,tool_id' })
+  if (error) throw new Error(`upsertAgentToolConfig: ${error.message}`)
+
+  const { data } = await getSupabase()
+    .from('agent_tool_configs')
+    .select('*')
+    .eq('agent_id', agentId)
+    .eq('tool_id', toolId)
+    .single()
+
+  return data as unknown as AgentToolConfig
+}
+
+export async function saveAgentToolConfigs(agentId: string, configs: ToolConfigInput[]): Promise<AgentToolConfig[]> {
+  const now = Date.now()
+
+  for (const config of configs) {
+    await getSupabase()
+      .from('agent_tool_configs')
+      .upsert({
+        agent_id: agentId,
+        tool_id: config.tool_id,
+        enabled: config.enabled ? 1 : 0,
+        require_approval: config.require_approval ? 1 : 0,
+        created_at: now,
+        updated_at: now,
+      }, { onConflict: 'agent_id,tool_id' })
+  }
+
+  return getAgentToolConfigs(agentId)
+}
+
+export async function deleteAgentToolConfigs(agentId: string): Promise<void> {
+  await getSupabase()
+    .from('agent_tool_configs')
+    .delete()
+    .eq('agent_id', agentId)
+}
+
+export async function copyAgentToolConfigs(fromAgentId: string, toAgentId: string): Promise<void> {
+  const configs = await getAgentToolConfigs(fromAgentId)
+  if (configs.length > 0) {
+    await saveAgentToolConfigs(
+      toAgentId,
+      configs.map(c => ({
+        tool_id: c.tool_id,
+        enabled: c.enabled === 1,
+        require_approval: c.require_approval === 1
+      }))
+    )
   }
 }

@@ -1,9 +1,11 @@
 /**
  * Apps Tab - Container for app integrations in Settings
- * Currently supports WhatsApp, designed to be extensible for future apps
+ * Supports WhatsApp and Google Workspace integrations
  */
 
 import { WhatsAppSettings } from './WhatsAppSettings'
+import { GoogleWorkspaceSettings } from './GoogleWorkspaceSettings'
+import { ExaSettings } from './ExaSettings'
 
 export function AppsTab(): React.JSX.Element {
   return (
@@ -17,6 +19,12 @@ export function AppsTab(): React.JSX.Element {
 
       {/* WhatsApp Integration */}
       <WhatsAppSettings />
+
+      {/* Google Workspace Integration */}
+      <GoogleWorkspaceSettings />
+
+      {/* Search and Datasets (Exa) Integration */}
+      <ExaSettings />
 
       {/* Future apps can be added here */}
       {/* <SlackSettings /> */}

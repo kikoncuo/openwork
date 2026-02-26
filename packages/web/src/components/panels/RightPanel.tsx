@@ -25,7 +25,9 @@ import {
   AlertTriangle,
   HardDrive,
   RotateCcw,
-  Trash2
+  Trash2,
+  Archive,
+  Terminal
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/lib/store'
@@ -33,6 +35,7 @@ import { useThreadState } from '@/lib/thread-context'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import type { Todo } from '@/types'
+import { TerminalPanel } from './TerminalPanel'
 
 const HEADER_HEIGHT = 40 // px
 const HANDLE_HEIGHT = 6 // px
@@ -45,6 +48,7 @@ interface SectionHeaderProps {
   badge?: number
   isOpen: boolean
   onToggle: () => void
+  rightAction?: React.ReactNode
 }
 
 function SectionHeader({
@@ -52,7 +56,8 @@ function SectionHeader({
   icon: Icon,
   badge,
   isOpen,
-  onToggle
+  onToggle,
+  rightAction
 }: SectionHeaderProps): React.JSX.Element {
   return (
     <button
@@ -68,6 +73,7 @@ function SectionHeader({
       />
       <Icon className="size-4" />
       <span className="flex-1 text-left">{title}</span>
+      {rightAction}
       {badge !== undefined && badge > 0 && (
         <span className="text-[10px] text-muted-foreground tabular-nums">{badge}</span>
       )}
@@ -120,11 +126,12 @@ function ResizeHandle({ onDrag }: ResizeHandleProps): React.JSX.Element {
 }
 
 export function RightPanel(): React.JSX.Element {
-  const { currentThreadId } = useAppStore()
+  const { currentThreadId, filesPanelMode, setFilesPanelMode } = useAppStore()
   const threadState = useThreadState(currentThreadId)
   const todos = threadState?.todos ?? []
   const workspaceFiles = threadState?.workspaceFiles ?? []
   const subagents = threadState?.subagents ?? []
+  const terminals = threadState?.terminals ?? []
   const containerRef = useRef<HTMLDivElement>(null)
 
   const [tasksOpen, setTasksOpen] = useState(true)
@@ -336,18 +343,35 @@ export function RightPanel(): React.JSX.Element {
       {/* Resize handle after TASKS */}
       {tasksOpen && (filesOpen || agentsOpen) && <ResizeHandle onDrag={handleTasksResize} />}
 
-      {/* FILES */}
+      {/* FILES / TERMINAL */}
       <div className="flex flex-col shrink-0 border-b border-border">
         <SectionHeader
-          title="FILES"
-          icon={FolderTree}
-          badge={workspaceFiles.length}
+          title={filesPanelMode === 'terminal' ? 'TERMINAL' : 'FILES'}
+          icon={filesPanelMode === 'terminal' ? Terminal : FolderTree}
+          badge={filesPanelMode === 'terminal' ? terminals.length : workspaceFiles.length}
           isOpen={filesOpen}
           onToggle={() => setFilesOpen((prev) => !prev)}
+          rightAction={
+            <span
+              role="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setFilesPanelMode(filesPanelMode === 'terminal' ? 'files' : 'terminal')
+              }}
+              className="p-0.5 rounded hover:bg-background-elevated text-muted-foreground hover:text-foreground transition-colors"
+              title={filesPanelMode === 'terminal' ? 'Switch to Files' : 'Switch to Terminal'}
+            >
+              {filesPanelMode === 'terminal' ? (
+                <FolderTree className="size-3.5" />
+              ) : (
+                <Terminal className="size-3.5" />
+              )}
+            </span>
+          }
         />
         {filesOpen && (
           <div className="overflow-auto" style={{ height: heights.files }}>
-            <FilesContent />
+            {filesPanelMode === 'terminal' ? <TerminalPanel /> : <FilesContent />}
           </div>
         )}
       </div>
@@ -526,6 +550,24 @@ function FilesContent(): React.JSX.Element {
   // Use the actively selected agent from the top tabs
   const agentId = activeAgentId
 
+  // Sandbox backend type state
+  const [sandboxBackendType, setSandboxBackendType] = useState<'buddy' | 'local'>('buddy')
+  const [localSandboxConfig, setLocalSandboxConfig] = useState<{ host: string; port: number }>({ host: 'localhost', port: 8080 })
+
+  // Load sandbox config on mount
+  useEffect(() => {
+    async function loadSandboxConfig(): Promise<void> {
+      try {
+        const config = await window.api.sandbox.getConfig()
+        setSandboxBackendType(config.type)
+        setLocalSandboxConfig({ host: config.localHost, port: config.localPort })
+      } catch (e) {
+        console.error('[FilesContent] Error loading sandbox config:', e)
+      }
+    }
+    loadSandboxConfig()
+  }, [])
+
   // Backup status state
   const [backupStatus, setBackupStatus] = useState<{
     schedulerActive: boolean
@@ -614,17 +656,72 @@ function FilesContent(): React.JSX.Element {
     }
   }
 
+  // Binary file extensions that should be base64 encoded
+  const BINARY_EXTENSIONS = new Set([
+    // Images
+    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg', '.tiff', '.tif',
+    // Documents
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.ods', '.odp',
+    // Archives
+    '.zip', '.tar', '.gz', '.rar', '.7z', '.bz2', '.xz',
+    // Audio
+    '.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma',
+    // Video
+    '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm',
+    // Executables and libraries
+    '.exe', '.dll', '.so', '.dylib', '.bin', '.o', '.a',
+    // Fonts
+    '.ttf', '.otf', '.woff', '.woff2', '.eot',
+    // Other binary formats
+    '.sqlite', '.db', '.pickle', '.pkl', '.npy', '.npz', '.parquet', '.avro',
+    '.class', '.jar', '.war', '.pyc', '.pyo', '.wasm'
+  ])
+
+  function isBinaryFile(filename: string): boolean {
+    const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase()
+    return BINARY_EXTENSIONS.has(ext)
+  }
+
   // Handle file upload
   async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>): Promise<void> {
     const files = event.target.files
-    if (!files || files.length === 0 || !agentId) return
+    if (!files || files.length === 0) return
+
+    // For E2B mode, need agentId
+    if (sandboxBackendType === 'buddy' && !agentId) return
 
     setUploading(true)
     try {
       for (const file of Array.from(files)) {
-        const content = await file.text()
         const filePath = `/home/user/${file.name}`
-        await window.api.workspace.backupWriteFile(agentId, filePath, content)
+
+        if (sandboxBackendType === 'local') {
+          // For local sandbox, upload directly to Docker container
+          // Pass workspace for per-agent isolation
+          const workspace = agentId ? `/home/user/${agentId}` : '/home/user'
+          const baseUrl = `http://${localSandboxConfig.host}:${localSandboxConfig.port}`
+          const content = await file.text()
+          await fetch(`${baseUrl}/write`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: filePath, content, workspace })
+          })
+        } else {
+          // E2B mode - use backup API
+          // Check if this is a binary file
+          if (isBinaryFile(file.name)) {
+            // For binary files, read as ArrayBuffer and encode as base64
+            const buffer = await file.arrayBuffer()
+            const base64 = btoa(
+              new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+            )
+            await window.api.workspace.backupWriteFile(agentId!, filePath, base64, 'base64')
+          } else {
+            // For text files, read as text
+            const content = await file.text()
+            await window.api.workspace.backupWriteFile(agentId!, filePath, content)
+          }
+        }
       }
       // Refresh file list after upload
       await handleRefresh()
@@ -639,12 +736,36 @@ function FilesContent(): React.JSX.Element {
     }
   }
 
-  // Load files - backup-first approach
+  // Load files - backup-first approach for E2B, direct fetch for local
   useEffect(() => {
     async function loadFiles(): Promise<void> {
-      if (!setWorkspaceFiles || !agentId) return
+      if (!setWorkspaceFiles) return
 
       try {
+        if (sandboxBackendType === 'local') {
+          // For local sandbox, fetch files directly from Docker container
+          // Pass workspace for per-agent isolation
+          const workspace = agentId ? `/home/user/${agentId}` : '/home/user'
+          const baseUrl = `http://${localSandboxConfig.host}:${localSandboxConfig.port}`
+          const response = await fetch(`${baseUrl}/ls`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: '/home/user', workspace, recursive: true })
+          })
+          const result = await response.json()
+          if (result.success && result.files) {
+            setWorkspaceFiles(result.files.map((f: { path: string; is_dir: boolean; size?: number }) => ({
+              path: f.path,
+              is_dir: f.is_dir,
+              size: f.size
+            })))
+          }
+          return
+        }
+
+        // E2B/Buddy mode - use backup-first approach
+        if (!agentId) return
+
         // Step 1: Try backup first (always available, no sandbox needed)
         const backupResult = await window.api.workspace.backupListFiles(agentId)
         if (backupResult.success && backupResult.files && backupResult.files.length > 0) {
@@ -669,13 +790,37 @@ function FilesContent(): React.JSX.Element {
       }
     }
     loadFiles()
-  }, [agentId, setWorkspaceFiles])
+  }, [agentId, setWorkspaceFiles, sandboxBackendType, localSandboxConfig])
 
-  // Handle refresh - reload file list (backup-first)
+  // Handle refresh - reload file list (backup-first for E2B, direct for local)
   async function handleRefresh(): Promise<void> {
-    if (!agentId || !setWorkspaceFiles) return
+    if (!setWorkspaceFiles) return
     setRefreshing(true)
     try {
+      if (sandboxBackendType === 'local') {
+        // For local sandbox, fetch files directly from Docker container
+        // Pass workspace for per-agent isolation
+        const workspace = agentId ? `/home/user/${agentId}` : '/home/user'
+        const baseUrl = `http://${localSandboxConfig.host}:${localSandboxConfig.port}`
+        const response = await fetch(`${baseUrl}/ls`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: '/home/user', workspace, recursive: true })
+        })
+        const result = await response.json()
+        if (result.success && result.files) {
+          setWorkspaceFiles(result.files.map((f: { path: string; is_dir: boolean; size?: number }) => ({
+            path: f.path,
+            is_dir: f.is_dir,
+            size: f.size
+          })))
+        }
+        return
+      }
+
+      // E2B/Buddy mode
+      if (!agentId) return
+
       // Try backup first
       const backupResult = await window.api.workspace.backupListFiles(agentId)
       if (backupResult.success && backupResult.files && backupResult.files.length > 0) {
@@ -719,13 +864,81 @@ function FilesContent(): React.JSX.Element {
 
   // Handle file download
   const handleDownload = useCallback(async (filePath: string, fileName: string): Promise<void> => {
-    if (!agentId) return
-
     try {
+      if (sandboxBackendType === 'local') {
+        // For local sandbox, fetch file directly from Docker container
+        // Pass workspace for per-agent isolation
+        const workspace = agentId ? `/home/user/${agentId}` : '/home/user'
+        const baseUrl = `http://${localSandboxConfig.host}:${localSandboxConfig.port}`
+        const response = await fetch(`${baseUrl}/read`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: filePath, workspace })
+        })
+        const result = await response.json()
+        if (result.success && result.content) {
+          // Remove line numbers from content (format is "1\tline content")
+          const content = result.content
+            .split('\n')
+            .map((line: string) => line.replace(/^\d+\t/, ''))
+            .join('\n')
+
+          const blob = new Blob([content], { type: 'text/plain' })
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = fileName
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          URL.revokeObjectURL(url)
+        }
+        return
+      }
+
+      // E2B mode
+      if (!agentId) return
+
       const result = await window.api.workspace.backupReadFile(agentId, filePath)
       if (result.success && result.content !== undefined) {
+        let blobContent: BlobPart
+        let mimeType: string
+
+        // Check if content is base64 encoded (binary file)
+        if (result.encoding === 'base64') {
+          // Decode base64 to binary
+          const binaryString = atob(result.content)
+          const bytes = new Uint8Array(binaryString.length)
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i)
+          }
+          blobContent = bytes
+          // Try to determine MIME type from extension
+          const ext = fileName.slice(fileName.lastIndexOf('.')).toLowerCase()
+          const mimeTypes: Record<string, string> = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.pdf': 'application/pdf',
+            '.doc': 'application/msword',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.xls': 'application/vnd.ms-excel',
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            '.zip': 'application/zip',
+            '.mp3': 'audio/mpeg',
+            '.mp4': 'video/mp4'
+          }
+          mimeType = mimeTypes[ext] || 'application/octet-stream'
+        } else {
+          // Text file - use content directly
+          blobContent = result.content
+          mimeType = 'text/plain'
+        }
+
         // Create blob and trigger download
-        const blob = new Blob([result.content], { type: 'text/plain' })
+        const blob = new Blob([blobContent], { type: mimeType })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
@@ -740,7 +953,49 @@ function FilesContent(): React.JSX.Element {
     } catch (e) {
       console.error('[FilesContent] Download error:', e)
     }
+  }, [agentId, sandboxBackendType, localSandboxConfig])
+
+  // Handle folder download as ZIP
+  const handleDownloadFolder = useCallback(async (folderPath: string, folderName: string): Promise<void> => {
+    if (!agentId) return
+
+    try {
+      const blob = await window.api.workspace.downloadFolder(agentId, folderPath)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${folderName}.zip`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      console.error('[FilesContent] Folder download error:', e)
+    }
   }, [agentId])
+
+  // Handle empty folder
+  const handleEmptyFolder = useCallback(async (folderPath: string): Promise<void> => {
+    if (!agentId || !setWorkspaceFiles) return
+
+    // Confirm the action
+    if (!confirm(`Are you sure you want to empty "${folderPath}"? All contents will be deleted.`)) {
+      return
+    }
+
+    try {
+      const result = await window.api.workspace.emptyFolder(agentId, folderPath)
+      if (result.success) {
+        // Refresh file list
+        await handleRefresh()
+      } else {
+        console.error('[FilesContent] Empty folder failed:', result.error)
+      }
+    } catch (e) {
+      console.error('[FilesContent] Empty folder error:', e)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentId, setWorkspaceFiles])
 
   // Format relative time for backup
   function formatRelativeTime(timestamp: number): string {
@@ -756,8 +1011,8 @@ function FilesContent(): React.JSX.Element {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Recovery banner when sandbox is disconnected but backup exists */}
-      {sandboxError && backupStatus?.backup && (
+      {/* Recovery banner when sandbox is disconnected but backup exists - only for E2B mode */}
+      {sandboxBackendType === 'buddy' && sandboxError && backupStatus?.backup && (
         <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-400">
           <AlertTriangle className="size-4 shrink-0" />
           <span className="text-xs flex-1">
@@ -793,12 +1048,25 @@ function FilesContent(): React.JSX.Element {
       {/* Header with action buttons */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-border/50 bg-background/30">
         <div className="flex items-center gap-1.5 flex-1 min-w-0">
-          <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-400 font-medium shrink-0">
-            E2B
-          </span>
-          <span className="text-[10px] text-muted-foreground truncate">
-            Cloud Sandbox
-          </span>
+          {sandboxBackendType === 'local' ? (
+            <>
+              <span className="text-[9px] px-1 py-0.5 rounded bg-green-500/20 text-green-400 font-medium shrink-0">
+                Docker
+              </span>
+              <span className="text-[10px] text-muted-foreground truncate">
+                Local Container
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-400 font-medium shrink-0">
+                E2B
+              </span>
+              <span className="text-[10px] text-muted-foreground truncate">
+                Cloud Sandbox
+              </span>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-1">
           {/* Upload button */}
@@ -830,8 +1098,8 @@ function FilesContent(): React.JSX.Element {
         </div>
       </div>
 
-      {/* Backup status indicator */}
-      {backupStatus?.backup && !sandboxError && (
+      {/* Backup status indicator - only for E2B mode */}
+      {sandboxBackendType === 'buddy' && backupStatus?.backup && !sandboxError && (
         <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/30 bg-background/20 text-[10px]">
           <div className="flex items-center gap-1.5 text-muted-foreground">
             <HardDrive className="size-3" />
@@ -866,7 +1134,13 @@ function FilesContent(): React.JSX.Element {
         </div>
       ) : (
         <div className="py-1 overflow-auto flex-1">
-          <FileTree files={workspaceFiles} onDelete={handleDelete} onDownload={handleDownload} />
+          <FileTree
+            files={workspaceFiles}
+            onDelete={handleDelete}
+            onDownload={handleDownload}
+            onDownloadFolder={handleDownloadFolder}
+            onEmptyFolder={handleEmptyFolder}
+          />
         </div>
       )}
     </div>
@@ -967,11 +1241,15 @@ function buildFileTree(files: FileInfo[]): TreeNode[] {
 function FileTree({
   files,
   onDelete,
-  onDownload
+  onDownload,
+  onDownloadFolder,
+  onEmptyFolder
 }: {
   files: FileInfo[]
   onDelete?: (filePath: string) => Promise<void>
   onDownload?: (filePath: string, fileName: string) => Promise<void>
+  onDownloadFolder?: (folderPath: string, folderName: string) => Promise<void>
+  onEmptyFolder?: (folderPath: string) => Promise<void>
 }): React.JSX.Element {
   const tree = useMemo(() => buildFileTree(files), [files])
   const [expanded, setExpanded] = useState<Set<string>>(() => {
@@ -1006,6 +1284,8 @@ function FileTree({
           onToggle={toggleExpand}
           onDelete={onDelete}
           onDownload={onDownload}
+          onDownloadFolder={onDownloadFolder}
+          onEmptyFolder={onEmptyFolder}
         />
       ))}
     </div>
@@ -1018,7 +1298,9 @@ function FileTreeNode({
   expanded,
   onToggle,
   onDelete,
-  onDownload
+  onDownload,
+  onDownloadFolder,
+  onEmptyFolder
 }: {
   node: TreeNode
   depth: number
@@ -1026,6 +1308,8 @@ function FileTreeNode({
   onToggle: (path: string) => void
   onDelete?: (filePath: string) => Promise<void>
   onDownload?: (filePath: string, fileName: string) => Promise<void>
+  onDownloadFolder?: (folderPath: string, folderName: string) => Promise<void>
+  onEmptyFolder?: (folderPath: string) => Promise<void>
 }): React.JSX.Element {
   const { currentThreadId } = useAppStore()
   const threadState = useThreadState(currentThreadId)
@@ -1054,6 +1338,20 @@ function FileTreeNode({
     e.stopPropagation()
     if (onDelete) {
       onDelete(node.path)
+    }
+  }
+
+  const handleDownloadFolderClick = (e: React.MouseEvent): void => {
+    e.stopPropagation()
+    if (onDownloadFolder) {
+      onDownloadFolder(node.path, node.name)
+    }
+  }
+
+  const handleEmptyFolderClick = (e: React.MouseEvent): void => {
+    e.stopPropagation()
+    if (onEmptyFolder) {
+      onEmptyFolder(node.path)
     }
   }
 
@@ -1116,6 +1414,30 @@ function FileTreeNode({
             )}
           </div>
         )}
+
+        {/* Action icons for directories (visible on hover) */}
+        {node.is_dir && (
+          <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
+            {onDownloadFolder && (
+              <button
+                onClick={handleDownloadFolderClick}
+                className="p-0.5 rounded hover:bg-background-elevated text-muted-foreground hover:text-foreground"
+                title="Download as ZIP"
+              >
+                <Archive className="size-3" />
+              </button>
+            )}
+            {onEmptyFolder && (
+              <button
+                onClick={handleEmptyFolderClick}
+                className="p-0.5 rounded hover:bg-status-critical/20 text-muted-foreground hover:text-status-critical"
+                title="Empty folder"
+              >
+                <Trash2 className="size-3" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Children */}
@@ -1130,6 +1452,8 @@ function FileTreeNode({
             onToggle={onToggle}
             onDelete={onDelete}
             onDownload={onDownload}
+            onDownloadFolder={onDownloadFolder}
+            onEmptyFolder={onEmptyFolder}
           />
         ))}
     </>

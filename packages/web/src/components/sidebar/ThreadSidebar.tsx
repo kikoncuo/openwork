@@ -1,7 +1,8 @@
-import { useState, useMemo } from 'react'
-import { Plus, MessageSquare, Trash2, Pencil, Loader2, Settings, Phone } from 'lucide-react'
+import { useState, useMemo, useEffect } from 'react'
+import { Plus, MessageSquare, Trash2, Pencil, Loader2, Settings, Phone, Clock, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Input } from '@/components/ui/input'
 import { useAppStore } from '@/lib/store'
 import { useThreadStream } from '@/lib/thread-context'
 import { cn, formatRelativeTime, truncate } from '@/lib/utils'
@@ -16,23 +17,32 @@ import {
   ContextMenuSubTrigger
 } from '@/components/ui/context-menu'
 import { AgentIconComponent } from '@/lib/agent-icons'
-import type { Thread, Agent } from '@/types'
+import { windowApi } from '@/api'
+import type { Thread, Agent, ThreadSource } from '@/types'
 
-// Thread source filter type
-type ThreadFilter = 'all' | 'chat' | 'whatsapp'
+// Thread source filter type - matches ThreadSource plus 'all'
+type ThreadFilter = 'all' | ThreadSource
 
-// Thread loading indicator that subscribes to the stream context
-function ThreadLoadingIcon({ threadId, isWhatsApp }: { threadId: string; isWhatsApp?: boolean }): React.JSX.Element {
+/**
+ * Thread icon indicator based on source type.
+ * Shows loading spinner when thread is active, otherwise shows source-specific icon.
+ */
+function ThreadLoadingIcon({ threadId, source }: { threadId: string; source?: string }): React.JSX.Element {
   const { isLoading } = useThreadStream(threadId)
 
   if (isLoading) {
     return <Loader2 className="size-4 shrink-0 text-status-info animate-spin" />
   }
 
-  if (isWhatsApp) {
+  // Source-specific icons
+  if (source === 'whatsapp') {
     return <Phone className="size-4 shrink-0 text-emerald-500" />
   }
+  if (source === 'cronjob') {
+    return <Clock className="size-4 shrink-0 text-blue-500" />
+  }
 
+  // Default: chat icon
   return <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
 }
 
@@ -80,7 +90,6 @@ function ThreadListItem({
   onEditingTitleChange: (value: string) => void
   onReassignToAgent: (agentId: string) => void
 }): React.JSX.Element {
-  const isWhatsApp = thread.source === 'whatsapp'
   const { isLoading } = useThreadStream(thread.thread_id)
 
   // Show attention indicator when:
@@ -106,7 +115,7 @@ function ThreadListItem({
           }}
         >
           <AgentIndicator agent={agent} />
-          <ThreadLoadingIcon threadId={thread.thread_id} isWhatsApp={isWhatsApp} />
+          <ThreadLoadingIcon threadId={thread.thread_id} source={thread.source} />
           <div className="flex-1 min-w-0 overflow-hidden">
             {isEditing ? (
               <input
@@ -202,7 +211,7 @@ export function ThreadSidebar(): React.JSX.Element {
     selectThread,
     deleteThread,
     updateThread,
-    openSettings,
+    openGlobalSettings,
     agents,
     reassignThreadToAgent
   } = useAppStore()
@@ -218,19 +227,90 @@ export function ThreadSidebar(): React.JSX.Element {
 
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
-  const [filter, setFilter] = useState<ThreadFilter>('all')
 
-  // Filter threads based on selected filter
+  // Filter state - persisted to localStorage
+  const [filter, setFilter] = useState<ThreadFilter>(() => {
+    const saved = localStorage.getItem('threadFilter') as ThreadFilter | null
+    return saved || 'all'
+  })
+
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [searchResults, setSearchResults] = useState<Thread[] | null>(null)
+  const [searchMeta, setSearchMeta] = useState<{
+    totalThreads: number
+    limitApplied: boolean
+    searchLimit: number
+  } | null>(null)
+  const [isSearching, setIsSearching] = useState(false)
+
+  // Debounce search input (300ms delay)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+
+  // Persist filter to localStorage when it changes
+  useEffect(() => {
+    localStorage.setItem('threadFilter', filter)
+  }, [filter])
+
+  // Server-side search effect
+  useEffect(() => {
+    // Clear results if search is empty
+    if (!debouncedSearch.trim()) {
+      setSearchResults(null)
+      setSearchMeta(null)
+      return
+    }
+
+    // Perform search
+    setIsSearching(true)
+    windowApi.threads.search(debouncedSearch, filter !== 'all' ? filter : undefined)
+      .then(result => {
+        setSearchResults(result.threads)
+        setSearchMeta({
+          totalThreads: result.totalThreads,
+          limitApplied: result.limitApplied,
+          searchLimit: result.searchLimit
+        })
+      })
+      .catch(error => {
+        console.error('[ThreadSidebar] Search error:', error)
+        setSearchResults(null)
+        setSearchMeta(null)
+      })
+      .finally(() => setIsSearching(false))
+  }, [debouncedSearch, filter])
+
+  // Count threads by source for filter dropdown
+  const sourceCounts = useMemo(() => ({
+    chat: threads.filter(t => !t.source || t.source === 'chat').length,
+    whatsapp: threads.filter(t => t.source === 'whatsapp').length,
+    cronjob: threads.filter(t => t.source === 'cronjob').length,
+  }), [threads])
+
+  // Filtered threads - use search results if searching, otherwise filter client-side by source
   const filteredThreads = useMemo(() => {
-    if (filter === 'all') return threads
-    if (filter === 'whatsapp') return threads.filter(t => t.source === 'whatsapp')
-    // 'chat' filter - show threads that are not from WhatsApp
-    return threads.filter(t => t.source !== 'whatsapp')
-  }, [threads, filter])
+    // If we have search results from server, use those
+    if (searchResults !== null) {
+      return searchResults
+    }
 
-  // Count threads by source for filter badges
-  const whatsappCount = useMemo(() => threads.filter(t => t.source === 'whatsapp').length, [threads])
-  const chatCount = useMemo(() => threads.filter(t => t.source !== 'whatsapp').length, [threads])
+    // Otherwise, filter client-side by source only
+    let result = threads
+
+    if (filter === 'whatsapp') {
+      result = result.filter(t => t.source === 'whatsapp')
+    } else if (filter === 'cronjob') {
+      result = result.filter(t => t.source === 'cronjob')
+    } else if (filter === 'chat') {
+      result = result.filter(t => !t.source || t.source === 'chat')
+    }
+
+    return result
+  }, [threads, filter, searchResults])
 
   const startEditing = (threadId: string, currentTitle: string): void => {
     setEditingThreadId(threadId)
@@ -254,6 +334,19 @@ export function ThreadSidebar(): React.JSX.Element {
     await createThread({ title: `Thread ${new Date().toLocaleDateString()}` })
   }
 
+  const handleFilterChange = (newFilter: string): void => {
+    setFilter(newFilter as ThreadFilter)
+    // Clear search when changing filter
+    if (searchQuery) {
+      setSearchQuery('')
+      setSearchResults(null)
+      setSearchMeta(null)
+    }
+  }
+
+  // Check if we should show filter/search controls
+  const hasMultipleSources = sourceCounts.whatsapp > 0 || sourceCounts.cronjob > 0
+
   return (
     <>
       <aside className="flex h-full w-full flex-col border-r border-border bg-sidebar overflow-hidden">
@@ -265,38 +358,69 @@ export function ThreadSidebar(): React.JSX.Element {
           </Button>
         </div>
 
-        {/* Filter Buttons */}
-        {(whatsappCount > 0 || filter !== 'all') && (
-          <div className="px-2 pb-2 flex gap-1">
-            <Button
-              variant={filter === 'all' ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={() => setFilter('all')}
+        {/* Search Input */}
+        <div className="px-2 pb-2">
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+            <Input
+              placeholder="Search threads..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 pr-8 h-8 text-sm"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => {
+                  setSearchQuery('')
+                  setSearchResults(null)
+                  setSearchMeta(null)
+                }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 hover:text-foreground"
+              >
+                <X className="size-4 text-muted-foreground" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Filter Dropdown - only show if there are multiple sources */}
+        {hasMultipleSources && (
+          <div className="px-2 pb-2">
+            <select
+              value={filter}
+              onChange={(e) => handleFilterChange(e.target.value)}
+              className="w-full h-8 px-2 text-xs bg-background border border-border rounded-sm cursor-pointer focus:ring-1 focus:ring-ring focus:outline-none"
             >
-              All
-              <span className="ml-1 text-muted-foreground">{threads.length}</span>
-            </Button>
-            <Button
-              variant={filter === 'chat' ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={() => setFilter('chat')}
-            >
-              <MessageSquare className="size-3 mr-1" />
-              Chats
-              {chatCount > 0 && <span className="ml-1 text-muted-foreground">{chatCount}</span>}
-            </Button>
-            <Button
-              variant={filter === 'whatsapp' ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={() => setFilter('whatsapp')}
-            >
-              <Phone className="size-3 mr-1 text-emerald-500" />
-              WhatsApp
-              {whatsappCount > 0 && <span className="ml-1 text-muted-foreground">{whatsappCount}</span>}
-            </Button>
+              <option value="all">All Threads ({threads.length})</option>
+              <option value="chat">
+                Chats ({sourceCounts.chat})
+              </option>
+              {sourceCounts.whatsapp > 0 && (
+                <option value="whatsapp">
+                  WhatsApp ({sourceCounts.whatsapp})
+                </option>
+              )}
+              {sourceCounts.cronjob > 0 && (
+                <option value="cronjob">
+                  Scheduled ({sourceCounts.cronjob})
+                </option>
+              )}
+            </select>
+          </div>
+        )}
+
+        {/* Search Limit Warning */}
+        {searchMeta?.limitApplied && (
+          <div className="mx-2 mb-2 p-2 text-xs bg-yellow-500/10 border border-yellow-500/30 rounded text-yellow-600 dark:text-yellow-400">
+            <span className="font-medium">Note:</span> Only searching your {searchMeta.searchLimit} most recent threads
+            ({searchMeta.totalThreads} total). Consider deleting old threads for better search coverage.
+          </div>
+        )}
+
+        {/* Searching Indicator */}
+        {isSearching && (
+          <div className="flex items-center justify-center py-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3 animate-spin mr-1" /> Searching...
           </div>
         )}
 
@@ -322,23 +446,31 @@ export function ThreadSidebar(): React.JSX.Element {
               />
             ))}
 
-            {filteredThreads.length === 0 && (
+            {filteredThreads.length === 0 && !isSearching && (
               <div className="px-3 py-8 text-center text-sm text-muted-foreground">
-                {filter === 'all' && 'No threads yet'}
-                {filter === 'chat' && 'No chat threads'}
-                {filter === 'whatsapp' && 'No WhatsApp threads'}
+                {searchQuery
+                  ? 'No threads match your search'
+                  : filter === 'all'
+                    ? 'No threads yet'
+                    : filter === 'chat'
+                      ? 'No chat threads'
+                      : filter === 'whatsapp'
+                        ? 'No WhatsApp threads'
+                        : filter === 'cronjob'
+                          ? 'No scheduled threads'
+                          : 'No threads'}
               </div>
             )}
           </div>
         </ScrollArea>
 
-        {/* Settings Button */}
+        {/* Global Settings Button */}
         <div className="p-2 border-t border-border">
           <Button
             variant="ghost"
             size="sm"
             className="w-full justify-start gap-2"
-            onClick={() => openSettings()} // undefined = edit active agent
+            onClick={() => openGlobalSettings()}
           >
             <Settings className="size-4" />
             Settings

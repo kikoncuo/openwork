@@ -1,6 +1,10 @@
 import { Server, Socket } from 'socket.io'
 import { registerAgentStreamHandlers } from './agent-stream.js'
 import { registerWhatsAppHandlers } from './whatsapp.js'
+import { registerGoogleWorkspaceHandlers } from './google-workspace.js'
+import { registerExaHandlers } from './exa.js'
+import { registerSlackHandlers } from './slack.js'
+import { registerMicrosoftTeamsHandlers } from './microsoft-teams.js'
 import { verifySocketAuth } from '../middleware/auth.js'
 
 // Extend Socket type to include user info
@@ -41,19 +45,52 @@ export function broadcastToUser(userId: string, event: string, data: unknown): v
   console.log(`[WebSocket] Broadcast '${event}' to ${socketIds.size} socket(s) for user ${userId}`)
 }
 
+/**
+ * Emit execution stream event to a specific thread channel.
+ * Used for real-time stdout/stderr during command execution.
+ */
+export function emitExecuteStream(
+  userId: string,
+  threadId: string,
+  toolCallId: string,
+  streamType: 'stdout' | 'stderr' | 'image_saved',
+  data: string
+): void {
+  if (!ioInstance) return
+
+  const socketIds = userSockets.get(userId)
+  if (!socketIds || socketIds.size === 0) return
+
+  const channel = `agent:stream:${threadId}`
+  const payload = {
+    type: 'execute_stream',
+    streamType,
+    toolCallId,
+    data,
+    timestamp: Date.now()
+  }
+
+  for (const socketId of socketIds) {
+    const socket = ioInstance.sockets.sockets.get(socketId)
+    if (socket) {
+      socket.emit(channel, payload)
+    }
+  }
+}
+
 export function registerWebSocketHandlers(io: Server): void {
   // Store io instance for broadcastToUser
   ioInstance = io
 
   // Authentication middleware for socket connections
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.replace('Bearer ', '')
 
     if (!token) {
       return next(new Error('Authentication required'))
     }
 
-    const payload = verifySocketAuth(token)
+    const payload = await verifySocketAuth(token)
     if (!payload) {
       return next(new Error('Invalid or expired token'))
     }
@@ -82,6 +119,10 @@ export function registerWebSocketHandlers(io: Server): void {
     // Register domain-specific handlers
     registerAgentStreamHandlers(socket)
     registerWhatsAppHandlers(socket)
+    registerGoogleWorkspaceHandlers(socket)
+    registerExaHandlers(socket)
+    registerSlackHandlers(socket)
+    registerMicrosoftTeamsHandlers(socket)
 
     socket.on('disconnect', (reason) => {
       console.log(`[WebSocket] Client disconnected: ${socket.id}, reason: ${reason}`)

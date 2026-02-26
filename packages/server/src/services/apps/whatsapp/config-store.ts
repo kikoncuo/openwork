@@ -1,9 +1,10 @@
 /**
  * WhatsApp Agent Configuration Store
  * Database CRUD operations for WhatsApp agent config and thread mapping
+ * Uses Supabase for persistence
  */
 
-import { getDb, saveToDisk } from '../../db/index.js'
+import { getSupabase } from '../../db/supabase-client.js'
 import type { WhatsAppAgentConfig, WhatsAppThreadMapping } from '../../db/index.js'
 
 // ============================================
@@ -14,79 +15,64 @@ import type { WhatsAppAgentConfig, WhatsAppThreadMapping } from '../../db/index.
  * Get WhatsApp agent configuration for a user.
  * Returns null if not configured.
  */
-export function getWhatsAppAgentConfig(userId: string): WhatsAppAgentConfig | null {
-  const database = getDb()
-  const stmt = database.prepare('SELECT * FROM whatsapp_agent_config WHERE user_id = ?')
-  stmt.bind([userId])
+export async function getWhatsAppAgentConfig(userId: string): Promise<WhatsAppAgentConfig | null> {
+  const { data, error } = await getSupabase()
+    .from('whatsapp_agent_config')
+    .select('*')
+    .eq('user_id', userId)
+    .single()
 
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const config = stmt.getAsObject() as unknown as WhatsAppAgentConfig
-  stmt.free()
-  return config
+  if (error || !data) return null
+  return data as unknown as WhatsAppAgentConfig
 }
 
 /**
  * Create or update WhatsApp agent configuration for a user.
  */
-export function upsertWhatsAppAgentConfig(
+export async function upsertWhatsAppAgentConfig(
   userId: string,
   updates: Partial<Omit<WhatsAppAgentConfig, 'user_id' | 'created_at' | 'updated_at'>>
-): WhatsAppAgentConfig {
-  const database = getDb()
+): Promise<WhatsAppAgentConfig> {
   const now = Date.now()
-  const existing = getWhatsAppAgentConfig(userId)
+  const existing = await getWhatsAppAgentConfig(userId)
 
   if (existing) {
     // Update existing config
-    const setClauses: string[] = ['updated_at = ?']
-    const values: (string | number | null)[] = [now]
+    const row: Record<string, unknown> = { updated_at: now }
 
-    if (updates.enabled !== undefined) {
-      setClauses.push('enabled = ?')
-      values.push(updates.enabled)
-    }
-    if (updates.agent_id !== undefined) {
-      setClauses.push('agent_id = ?')
-      values.push(updates.agent_id)
-    }
-    if (updates.thread_timeout_minutes !== undefined) {
-      setClauses.push('thread_timeout_minutes = ?')
-      values.push(updates.thread_timeout_minutes)
-    }
+    if (updates.enabled !== undefined) row.enabled = updates.enabled
+    if (updates.agent_id !== undefined) row.agent_id = updates.agent_id
+    if (updates.thread_timeout_minutes !== undefined) row.thread_timeout_minutes = updates.thread_timeout_minutes
 
-    values.push(userId)
-    database.run(`UPDATE whatsapp_agent_config SET ${setClauses.join(', ')} WHERE user_id = ?`, values)
+    await getSupabase()
+      .from('whatsapp_agent_config')
+      .update(row)
+      .eq('user_id', userId)
   } else {
     // Create new config
-    database.run(
-      `INSERT INTO whatsapp_agent_config (user_id, enabled, agent_id, thread_timeout_minutes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        userId,
-        updates.enabled ?? 0,
-        updates.agent_id ?? null,
-        updates.thread_timeout_minutes ?? 30,
-        now,
-        now
-      ]
-    )
+    await getSupabase()
+      .from('whatsapp_agent_config')
+      .insert({
+        user_id: userId,
+        enabled: updates.enabled ?? 0,
+        agent_id: updates.agent_id ?? null,
+        thread_timeout_minutes: updates.thread_timeout_minutes ?? 30,
+        created_at: now,
+        updated_at: now
+      })
   }
 
-  saveToDisk()
-  return getWhatsAppAgentConfig(userId)!
+  return (await getWhatsAppAgentConfig(userId))!
 }
 
 /**
  * Delete WhatsApp agent configuration for a user.
  */
-export function deleteWhatsAppAgentConfig(userId: string): void {
-  const database = getDb()
-  database.run('DELETE FROM whatsapp_agent_config WHERE user_id = ?', [userId])
-  saveToDisk()
+export async function deleteWhatsAppAgentConfig(userId: string): Promise<void> {
+  await getSupabase()
+    .from('whatsapp_agent_config')
+    .delete()
+    .eq('user_id', userId)
 }
 
 // ============================================
@@ -97,111 +83,99 @@ export function deleteWhatsAppAgentConfig(userId: string): void {
  * Get thread mapping for a JID.
  * Returns null if no mapping exists.
  */
-export function getThreadForJid(userId: string, jid: string): WhatsAppThreadMapping | null {
-  const database = getDb()
-  const stmt = database.prepare('SELECT * FROM whatsapp_thread_mapping WHERE user_id = ? AND jid = ?')
-  stmt.bind([userId, jid])
+export async function getThreadForJid(userId: string, jid: string): Promise<WhatsAppThreadMapping | null> {
+  const { data, error } = await getSupabase()
+    .from('whatsapp_thread_mapping')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('jid', jid)
+    .single()
 
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const mapping = stmt.getAsObject() as unknown as WhatsAppThreadMapping
-  stmt.free()
-  return mapping
+  if (error || !data) return null
+  return data as unknown as WhatsAppThreadMapping
 }
 
 /**
  * Get thread mapping by thread ID.
  */
-export function getThreadMappingByThreadId(threadId: string): WhatsAppThreadMapping | null {
-  const database = getDb()
-  const stmt = database.prepare('SELECT * FROM whatsapp_thread_mapping WHERE thread_id = ?')
-  stmt.bind([threadId])
+export async function getThreadMappingByThreadId(threadId: string): Promise<WhatsAppThreadMapping | null> {
+  const { data, error } = await getSupabase()
+    .from('whatsapp_thread_mapping')
+    .select('*')
+    .eq('thread_id', threadId)
+    .single()
 
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const mapping = stmt.getAsObject() as unknown as WhatsAppThreadMapping
-  stmt.free()
-  return mapping
+  if (error || !data) return null
+  return data as unknown as WhatsAppThreadMapping
 }
 
 /**
  * Create or update thread mapping for a JID.
  */
-export function updateThreadMapping(userId: string, jid: string, threadId: string): WhatsAppThreadMapping {
-  const database = getDb()
+export async function updateThreadMapping(userId: string, jid: string, threadId: string): Promise<WhatsAppThreadMapping> {
   const now = Date.now()
-  const existing = getThreadForJid(userId, jid)
 
-  if (existing) {
-    // Update existing mapping
-    database.run(
-      'UPDATE whatsapp_thread_mapping SET thread_id = ?, last_activity_at = ? WHERE user_id = ? AND jid = ?',
-      [threadId, now, userId, jid]
+  await getSupabase()
+    .from('whatsapp_thread_mapping')
+    .upsert(
+      {
+        user_id: userId,
+        jid,
+        thread_id: threadId,
+        last_activity_at: now,
+        created_at: now
+      },
+      { onConflict: 'user_id,jid' }
     )
-  } else {
-    // Create new mapping
-    database.run(
-      `INSERT INTO whatsapp_thread_mapping (user_id, jid, thread_id, last_activity_at, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      [userId, jid, threadId, now, now]
-    )
-  }
 
-  saveToDisk()
-  return getThreadForJid(userId, jid)!
+  return (await getThreadForJid(userId, jid))!
 }
 
 /**
  * Update the last activity timestamp for a thread mapping.
  */
-export function updateThreadMappingActivity(userId: string, jid: string): void {
-  const database = getDb()
+export async function updateThreadMappingActivity(userId: string, jid: string): Promise<void> {
   const now = Date.now()
-  database.run(
-    'UPDATE whatsapp_thread_mapping SET last_activity_at = ? WHERE user_id = ? AND jid = ?',
-    [now, userId, jid]
-  )
-  saveToDisk()
+  await getSupabase()
+    .from('whatsapp_thread_mapping')
+    .update({ last_activity_at: now })
+    .eq('user_id', userId)
+    .eq('jid', jid)
 }
 
 /**
  * Delete thread mapping for a JID.
  */
-export function deleteThreadMapping(userId: string, jid: string): void {
-  const database = getDb()
-  database.run('DELETE FROM whatsapp_thread_mapping WHERE user_id = ? AND jid = ?', [userId, jid])
-  saveToDisk()
+export async function deleteThreadMapping(userId: string, jid: string): Promise<void> {
+  await getSupabase()
+    .from('whatsapp_thread_mapping')
+    .delete()
+    .eq('user_id', userId)
+    .eq('jid', jid)
 }
 
 /**
  * Delete thread mapping by thread ID.
  */
-export function deleteThreadMappingByThreadId(threadId: string): void {
-  const database = getDb()
-  database.run('DELETE FROM whatsapp_thread_mapping WHERE thread_id = ?', [threadId])
-  saveToDisk()
+export async function deleteThreadMappingByThreadId(threadId: string): Promise<void> {
+  await getSupabase()
+    .from('whatsapp_thread_mapping')
+    .delete()
+    .eq('thread_id', threadId)
 }
 
 /**
  * Get all thread mappings for a user.
  */
-export function getAllThreadMappings(userId: string): WhatsAppThreadMapping[] {
-  const database = getDb()
-  const stmt = database.prepare('SELECT * FROM whatsapp_thread_mapping WHERE user_id = ? ORDER BY last_activity_at DESC')
-  stmt.bind([userId])
+export async function getAllThreadMappings(userId: string): Promise<WhatsAppThreadMapping[]> {
+  const { data, error } = await getSupabase()
+    .from('whatsapp_thread_mapping')
+    .select('*')
+    .eq('user_id', userId)
+    .order('last_activity_at', { ascending: false })
 
-  const mappings: WhatsAppThreadMapping[] = []
-  while (stmt.step()) {
-    mappings.push(stmt.getAsObject() as unknown as WhatsAppThreadMapping)
-  }
-  stmt.free()
-  return mappings
+  if (error || !data) return []
+  return data as unknown as WhatsAppThreadMapping[]
 }
 
 /**

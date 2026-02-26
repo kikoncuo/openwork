@@ -12,6 +12,14 @@ import {
   updateThreadMappingActivity,
   isThreadMappingActive
 } from '../../apps/whatsapp/config-store.js'
+import {
+  getSlackAgentConfig,
+  getThreadForSlackChannel,
+  updateSlackThreadMapping,
+  updateSlackThreadMappingActivity,
+  isSlackThreadMappingActive,
+  isSlackThreadMappingDeleted
+} from '../../apps/slack/config-store.js'
 import { createThread, updateThread, setThreadNeedsAttention } from '../../db/index.js'
 import { createAgentRuntime } from '../../agent/runtime.js'
 import { broadcastToUser } from '../../../websocket/index.js'
@@ -32,14 +40,20 @@ interface MessagePayload {
     isGroup: boolean
     senderName?: string
   }
-  jid: string
+  jid?: string  // WhatsApp JID
   contactName?: string
+  // Slack-specific fields
+  slackChannelId?: string
+  slackChannelName?: string
+  contextMessages?: string  // Conversation history (only for new threads)
+  messageCount?: number     // Number of new messages in this batch
+  isExistingThread?: boolean  // True if this is a continuation of existing thread
 }
 
 interface ContactInfo {
   jid: string
   name?: string
-  pushName?: string
+  pushName?: string | null
 }
 
 /**
@@ -92,13 +106,13 @@ async function getOrCreateThreadForJid(
   agentId: string,
   timeoutMinutes: number
 ): Promise<string> {
-  const existingMapping = getThreadForJid(userId, jid)
+  const existingMapping = await getThreadForJid(userId, jid)
 
   if (existingMapping) {
     // Check if the mapping is still active (within timeout)
     if (isThreadMappingActive(existingMapping, timeoutMinutes)) {
       // Update last activity and reuse thread
-      updateThreadMappingActivity(userId, jid)
+      await updateThreadMappingActivity(userId, jid)
       console.log(`[AgentHook] Reusing thread ${existingMapping.thread_id} for JID ${jid}`)
       return existingMapping.thread_id
     } else {
@@ -108,7 +122,7 @@ async function getOrCreateThreadForJid(
 
   // Create a new thread
   const threadId = uuidv4()
-  const thread = createThread(threadId, {
+  const thread = await createThread(threadId, {
     agentId,
     userId,
     source: 'whatsapp',
@@ -118,10 +132,10 @@ async function getOrCreateThreadForJid(
 
   // Set initial title based on contact name
   const title = `WhatsApp: ${contactName}`
-  updateThread(threadId, { title })
+  await updateThread(threadId, { title })
 
   // Create or update thread mapping
-  updateThreadMapping(userId, jid, threadId)
+  await updateThreadMapping(userId, jid, threadId)
 
   // Emit thread:created event
   await hookManager.emit({
@@ -157,6 +171,127 @@ async function getOrCreateThreadForJid(
 }
 
 /**
+ * Get or create a thread for a Slack channel.
+ * Uses timeout logic to determine if an existing thread should be reused.
+ */
+async function getOrCreateThreadForSlackChannel(
+  userId: string,
+  slackChannelId: string,
+  slackChannelName: string,
+  agentId: string,
+  timeoutSeconds: number,
+  contextMessages?: string
+): Promise<string> {
+  const existingMapping = await getThreadForSlackChannel(userId, slackChannelId)
+
+  // Check if mapping is deleted (user opted out)
+  if (existingMapping && isSlackThreadMappingDeleted(existingMapping)) {
+    console.log(`[AgentHook] Slack channel ${slackChannelId} is deleted, skipping`)
+    throw new Error('Channel mapping is deleted')
+  }
+
+  if (existingMapping) {
+    // Check if the mapping is still active (within timeout)
+    if (isSlackThreadMappingActive(existingMapping, timeoutSeconds)) {
+      // Update last activity and reuse thread
+      await updateSlackThreadMappingActivity(userId, slackChannelId)
+      console.log(`[AgentHook] Reusing thread ${existingMapping.thread_id} for Slack channel ${slackChannelId}`)
+      return existingMapping.thread_id
+    } else {
+      console.log(`[AgentHook] Thread ${existingMapping.thread_id} expired for Slack channel ${slackChannelId}, creating new thread`)
+    }
+  }
+
+  // Create a new thread
+  const threadId = uuidv4()
+  const thread = await createThread(threadId, {
+    agentId,
+    userId,
+    source: 'slack',
+    slackChannelId,
+    slackChannelName
+  })
+
+  // Set initial title based on channel name
+  const title = `Slack: ${slackChannelName}`
+
+  // If we have context messages, add them to the search_text for reference
+  const searchText = contextMessages ? `${title}\n\n${contextMessages.substring(0, 1500)}` : title
+  await updateThread(threadId, { title, search_text: searchText })
+
+  // Create or update thread mapping
+  await updateSlackThreadMapping(userId, slackChannelId, threadId)
+
+  // Emit thread:created event
+  await hookManager.emit({
+    type: 'thread:created',
+    userId,
+    source: 'slack',
+    payload: {
+      threadId,
+      agentId,
+      slackChannelId,
+      slackChannelName,
+      title
+    }
+  })
+
+  // Broadcast thread:created event to the user's connected clients
+  broadcastToUser(userId, 'thread:created', {
+    thread_id: threadId,
+    created_at: new Date(thread.created_at),
+    updated_at: new Date(thread.updated_at),
+    metadata: thread.metadata ? JSON.parse(thread.metadata) : undefined,
+    status: thread.status || 'idle',
+    title,
+    agent_id: agentId,
+    user_id: userId,
+    source: 'slack',
+    slack_channel_id: slackChannelId,
+    slack_channel_name: slackChannelName
+  })
+
+  console.log(`[AgentHook] Created new thread ${threadId} for Slack channel ${slackChannelId}`)
+  return threadId
+}
+
+/**
+ * Format a Slack message for the agent.
+ */
+function formatSlackMessageForAgent(payload: MessagePayload): string {
+  const message = payload.message
+  const channelName = payload.slackChannelName || 'Slack'
+  const channelId = payload.slackChannelId || message.to  // Get the actual channel ID
+  const senderName = message.senderName || message.from || 'Unknown'
+  const messageCount = payload.messageCount || 1
+  const isExistingThread = payload.isExistingThread ?? false
+
+  let formattedMessage = `[Slack Message]\n`
+  formattedMessage += `From: ${senderName}\n`
+  formattedMessage += `Channel ID: ${channelId}\n`  // Use channel ID for replying
+
+  if (message.isGroup) {
+    formattedMessage += `Type: Group/Multi-party DM\n`
+  } else {
+    formattedMessage += `Type: Direct Message with ${channelName}\n`
+  }
+
+  formattedMessage += `---\n`
+
+  // Add conversation history only for NEW threads (not existing ones)
+  if (payload.contextMessages && !isExistingThread) {
+    formattedMessage += `Conversation history (You = the user, others by name):\n${payload.contextMessages}\n\n---\n`
+  }
+
+  // Show new message(s) with appropriate label
+  const messageLabel = messageCount > 1 ? `New messages (${messageCount})` : 'Latest message'
+  formattedMessage += `${messageLabel} from ${senderName}:\n`
+  formattedMessage += message.content || '[No content]'
+
+  return formattedMessage
+}
+
+/**
  * Extract AI response text from agent stream output.
  */
 function extractResponseFromAgentOutput(output: unknown): string | null {
@@ -169,7 +304,7 @@ function extractResponseFromAgentOutput(output: unknown): string | null {
     // Find the last AI message
     for (let i = outputObj.messages.length - 1; i >= 0; i--) {
       const msg = outputObj.messages[i] as Record<string, unknown>
-      if (msg.type === 'ai' || msg._getType?.() === 'ai' || msg.role === 'assistant') {
+      if (msg.type === 'ai' || (typeof msg._getType === 'function' && (msg._getType as () => string)() === 'ai') || msg.role === 'assistant') {
         // Extract content
         const content = msg.content
         if (typeof content === 'string') {
@@ -306,7 +441,7 @@ async function invokeAgentServerSide(
     // If interrupt was detected, set needs_attention and return null
     if (interruptDetected) {
       console.log(`[AgentHook] Agent paused for approval - setting needs_attention`)
-      setThreadNeedsAttention(threadId, true)
+      await setThreadNeedsAttention(threadId, true)
       // Broadcast thread:updated event
       broadcastToUser(userId, 'thread:updated', {
         thread_id: threadId,
@@ -321,7 +456,7 @@ async function invokeAgentServerSide(
 
     // If we have a response, set needs_attention
     if (response) {
-      setThreadNeedsAttention(threadId, true)
+      await setThreadNeedsAttention(threadId, true)
       // Broadcast thread:updated event
       broadcastToUser(userId, 'thread:updated', {
         thread_id: threadId,
@@ -347,11 +482,20 @@ async function invokeAgentServerSide(
  * Get source-specific agent configuration.
  * Currently only supports WhatsApp, but can be extended for other sources.
  */
-function getSourceAgentConfig(userId: string, source: string) {
+async function getSourceAgentConfig(userId: string, source: string) {
   if (source === 'whatsapp') {
-    return getWhatsAppAgentConfig(userId)
+    return await getWhatsAppAgentConfig(userId)
   }
-  // Future: Add support for other sources like Telegram, Slack, etc.
+  if (source === 'slack') {
+    const config = await getSlackAgentConfig(userId)
+    if (config) {
+      // Normalize config to match WhatsApp structure
+      return {
+        ...config,
+        thread_timeout_minutes: Math.ceil(config.thread_timeout_seconds / 60)
+      }
+    }
+  }
   return null
 }
 
@@ -363,49 +507,93 @@ async function processMessage(
   source: string,
   payload: MessagePayload
 ): Promise<void> {
-  const config = getSourceAgentConfig(userId, source)
+  const config = await getSourceAgentConfig(userId, source)
 
   // Check if auto-agent is enabled
   if (!config || !config.enabled || !config.agent_id) {
-    console.log(`[AgentHook] Auto-agent not enabled for user ${userId}`)
+    console.log(`[AgentHook] Auto-agent not enabled for user ${userId} (source: ${source})`)
     return
   }
 
   const message = payload.message
-  const jid = message.isGroup ? message.to : message.from
-  const timeoutMinutes = config.thread_timeout_minutes || 30
-
-  // Get contact info for the sender
-  const messageStore = getMessageStore()
-  const contacts = messageStore.getContacts(userId)
-  const contact = contacts.find(c => c.jid === message.from) || null
-  const contactName = payload.contactName || contact?.name || contact?.pushName || message.senderName || message.from.split('@')[0]
 
   try {
-    // Emit agent:invoked event
-    await hookManager.emit({
-      type: 'agent:invoked',
-      userId,
-      source,
-      payload: {
+    let threadId: string
+    let formattedMessage: string
+    let identifier: string  // jid for WhatsApp, channelId for Slack
+
+    if (source === 'slack' && payload.slackChannelId) {
+      // Slack-specific processing
+      const slackChannelId = payload.slackChannelId
+      const slackChannelName = payload.slackChannelName || 'Slack DM'
+      const slackConfig = await getSlackAgentConfig(userId)
+      const timeoutSeconds = slackConfig?.thread_timeout_seconds || 60
+
+      identifier = slackChannelId
+
+      // Emit agent:invoked event
+      await hookManager.emit({
+        type: 'agent:invoked',
+        userId,
+        source,
+        payload: {
+          slackChannelId,
+          slackChannelName,
+          messageContent: message.content,
+          agentId: config.agent_id
+        }
+      })
+
+      // Get or create thread for Slack channel
+      threadId = await getOrCreateThreadForSlackChannel(
+        userId,
+        slackChannelId,
+        slackChannelName,
+        config.agent_id,
+        timeoutSeconds,
+        payload.contextMessages
+      )
+
+      // Format message for agent
+      formattedMessage = formatSlackMessageForAgent(payload)
+    } else {
+      // WhatsApp processing (default)
+      const jid = payload.jid || (message.isGroup ? message.to : message.from)
+      const timeoutMinutes = config.thread_timeout_minutes || 30
+
+      // Get contact info for the sender
+      const messageStore = getMessageStore()
+      const contacts = await messageStore.getContacts(userId)
+      const contact = contacts.find(c => c.jid === message.from) || null
+      const contactName = payload.contactName || contact?.name || contact?.pushName || message.senderName || message.from.split('@')[0]
+
+      identifier = jid
+
+      // Emit agent:invoked event
+      await hookManager.emit({
+        type: 'agent:invoked',
+        userId,
+        source,
+        payload: {
+          jid,
+          contactName,
+          messageContent: message.content,
+          agentId: config.agent_id
+        }
+      })
+
+      // Get or create thread for WhatsApp JID
+      threadId = await getOrCreateThreadForJid(
+        userId,
         jid,
         contactName,
-        messageContent: message.content,
-        agentId: config.agent_id
-      }
-    })
+        config.agent_id,
+        timeoutMinutes
+      )
 
-    // Get or create thread
-    const threadId = await getOrCreateThreadForJid(
-      userId,
-      jid,
-      contactName,
-      config.agent_id,
-      timeoutMinutes
-    )
-
-    // Format message for agent
-    const formattedMessage = formatMessageForAgent(message, contact)
+      // Format message for agent
+      formattedMessage = formatMessageForAgent(message, contact)
+    }
 
     // Invoke agent with userId for broadcasting
     const response = await invokeAgentServerSide(threadId, userId, formattedMessage)
@@ -419,13 +607,13 @@ async function processMessage(
         source,
         payload: {
           threadId,
-          jid,
+          ...(source === 'slack' ? { slackChannelId: identifier } : { jid: identifier }),
           response,
           agentId: config.agent_id
         }
       })
     } else {
-      console.log(`[AgentHook] No response generated for message from ${jid}`)
+      console.log(`[AgentHook] No response generated for message from ${identifier}`)
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
@@ -437,7 +625,7 @@ async function processMessage(
       userId,
       source,
       payload: {
-        jid,
+        jid: payload.jid || (message.isGroup ? message.to : message.from),
         error: errorMessage,
         agentId: config.agent_id
       }
@@ -457,7 +645,7 @@ export const agentHookHandler: HookHandler = {
   priority: 100,  // Run early in the chain
   handler: async (event: HookEvent): Promise<HookResult> => {
     const { userId, source, payload } = event
-    const messagePayload = payload as MessagePayload
+    const messagePayload = payload as unknown as MessagePayload
 
     // Skip if no message payload
     if (!messagePayload?.message) {
@@ -470,7 +658,7 @@ export const agentHookHandler: HookHandler = {
     }
 
     // Check if auto-agent is enabled before processing
-    const config = getSourceAgentConfig(userId, source)
+    const config = await getSourceAgentConfig(userId, source)
     if (!config?.enabled || !config.agent_id) {
       return { success: true }  // Not enabled, skip
     }
@@ -506,7 +694,7 @@ export const agentHookHandler: HookHandler = {
 /**
  * Check if auto-agent is enabled for a user and source.
  */
-export function isAutoAgentEnabled(userId: string, source: string = 'whatsapp'): boolean {
-  const config = getSourceAgentConfig(userId, source)
+export async function isAutoAgentEnabled(userId: string, source: string = 'whatsapp'): Promise<boolean> {
+  const config = await getSourceAgentConfig(userId, source)
   return !!(config?.enabled && config.agent_id)
 }

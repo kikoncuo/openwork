@@ -9,6 +9,7 @@ export interface User {
   userId: string
   email: string
   name: string | null
+  isAdmin: boolean
 }
 
 export interface AuthState {
@@ -213,6 +214,13 @@ export const useAuthStore = create<AuthState>()(
     }
   )
 )
+
+/**
+ * Hook to check if the current user is an admin.
+ */
+export function useIsAdmin(): boolean {
+  return useAuthStore((state) => state.user?.isAdmin ?? false)
+}
 
 /**
  * Hook to get the current access token.

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { createDeepAgent } from 'deepagents'
-import { getDefaultModel, getEnabledMcpServers } from '../ipc/models'
+import { getDefaultModel, getEnabledMcpServers, getToolConfigMap } from '../ipc/models'
 import { getApiKey, getThreadCheckpointPath, getCustomPrompt, getLearnedInsights, addLearnedInsight } from '../storage'
 import { getAgent, getAgentConfig, updateAgentConfig } from '../db/agents'
 import { getThread } from '../db'
@@ -21,6 +21,10 @@ import type * as _lcZodTypes from '@langchain/core/utils/types'
 import { BASE_SYSTEM_PROMPT } from './system-prompt'
 import { createWhatsAppTools, getWhatsAppInterruptTools } from '../apps/whatsapp/tools'
 import { whatsappService } from '../apps/whatsapp'
+import { createGoogleWorkspaceTools, getGoogleWorkspaceInterruptTools } from '../apps/google-workspace/tools'
+import { googleWorkspaceService } from '../apps/google-workspace'
+import { createExaTools, getExaInterruptTools } from '../apps/exa/tools'
+import { exaService } from '../apps/exa'
 
 // Types for agent config
 interface LearnedInsight {
@@ -37,6 +41,12 @@ interface McpServerConfig {
   args: string[]
   env?: Record<string, string>
   enabled: boolean
+}
+
+interface ToolConfig {
+  id: string
+  enabled: boolean
+  requireApproval?: boolean
 }
 
 // Global MCP client for managing connections
@@ -57,6 +67,8 @@ function getSystemPrompt(
 ): string {
   const workingDirSection = `
 ### File System and Paths
+
+**Current Date:** ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
 
 **IMPORTANT - Path Handling:**
 - All file paths use fully qualified absolute system paths
@@ -266,6 +278,7 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions) {
     custom_prompt?: string | null
     learned_insights?: LearnedInsight[]
     mcp_servers?: McpServerConfig[]
+    tool_configs?: ToolConfig[]
     model_default?: string
   } | null = null
 
@@ -279,7 +292,8 @@ export async function createAgentRuntime(options: CreateAgentRuntimeOptions) {
         learned_insights: rawConfig.learned_insights
           ? JSON.parse(rawConfig.learned_insights)
           : undefined,
-        mcp_servers: rawConfig.mcp_servers ? JSON.parse(rawConfig.mcp_servers) : undefined
+        mcp_servers: rawConfig.mcp_servers ? JSON.parse(rawConfig.mcp_servers) : undefined,
+        tool_configs: rawConfig.tool_configs ? JSON.parse(rawConfig.tool_configs) : undefined
       }
     }
 
@@ -369,16 +383,70 @@ The workspace root is: ${workspacePath}`
     console.log('[Runtime] WhatsApp tools available:', whatsappTools.map((t) => t.name).join(', '))
   }
 
-  // Combine MCP tools with custom tools and WhatsApp tools
-  const allTools = [...mcpTools, learnInsightTool, ...whatsappTools]
+  // Add Google Workspace tools if connected
+  const googleTools = googleWorkspaceService.isConnected() ? createGoogleWorkspaceTools() : []
+  if (googleTools.length > 0) {
+    console.log('[Runtime] Google Workspace tools available:', googleTools.map((t) => t.name).join(', '))
+  }
 
-  // Build interrupt list - execute always, plus WhatsApp send if connected
+  // Add Exa (Search and Datasets) tools if connected
+  const exaTools = exaService.isConnected() ? createExaTools() : []
+  if (exaTools.length > 0) {
+    console.log('[Runtime] Search and Datasets tools available:', exaTools.map((t) => t.name).join(', '))
+  }
+
+  // Combine MCP tools with custom tools, WhatsApp tools, Google Workspace tools, and Exa tools
+  const allTools = [...mcpTools, learnInsightTool, ...whatsappTools, ...googleTools, ...exaTools]
+
+  // Build interrupt list - execute by default, plus approval-required tools from integrations
   const interruptOn: Record<string, boolean> = { execute: true }
   if (whatsappTools.length > 0) {
     for (const toolName of getWhatsAppInterruptTools()) {
       interruptOn[toolName] = true
     }
   }
+  if (googleTools.length > 0) {
+    for (const toolName of getGoogleWorkspaceInterruptTools()) {
+      interruptOn[toolName] = true
+    }
+  }
+  if (exaTools.length > 0) {
+    for (const toolName of getExaInterruptTools()) {
+      interruptOn[toolName] = true
+    }
+  }
+
+  // Apply user's tool approval settings from config
+  // Use agent-specific tool configs if available, otherwise fall back to global
+  let toolConfigMap: Record<string, ToolConfig>
+  if (agentConfig?.tool_configs && agentConfig.tool_configs.length > 0) {
+    // Convert array to map
+    toolConfigMap = agentConfig.tool_configs.reduce((acc, config) => {
+      acc[config.id] = config
+      return acc
+    }, {} as Record<string, ToolConfig>)
+    console.log('[Runtime] Using agent-specific tool configs')
+  } else {
+    toolConfigMap = getToolConfigMap()
+    console.log('[Runtime] Using global tool configs')
+  }
+  console.log('[Runtime] User tool config map:', JSON.stringify(toolConfigMap, null, 2))
+
+  for (const [toolId, config] of Object.entries(toolConfigMap)) {
+    console.log(`[Runtime] Processing tool config: ${toolId} -> requireApproval=${config.requireApproval}`)
+    if (config.requireApproval === true) {
+      // User explicitly set this tool to require approval
+      interruptOn[toolId] = true
+      console.log(`[Runtime] Added ${toolId} to interruptOn (user setting)`)
+    } else if (config.requireApproval === false) {
+      // User explicitly set this tool to NOT require approval
+      // Respect user choice - they can set any tool to Auto mode
+      delete interruptOn[toolId]
+      console.log(`[Runtime] Removed ${toolId} from interruptOn (user setting)`)
+    }
+  }
+
+  console.log('[Runtime] Final interruptOn tools:', Object.keys(interruptOn))
 
   const agent = createDeepAgent({
     model,
@@ -400,6 +468,12 @@ The workspace root is: ${workspacePath}`
   }
   if (whatsappTools.length > 0) {
     console.log('[Runtime] WhatsApp tools available:', whatsappTools.map((t) => t.name).join(', '))
+  }
+  if (googleTools.length > 0) {
+    console.log('[Runtime] Google Workspace tools available:', googleTools.map((t) => t.name).join(', '))
+  }
+  if (exaTools.length > 0) {
+    console.log('[Runtime] Search and Datasets tools available:', exaTools.map((t) => t.name).join(', '))
   }
   console.log('[Runtime] Total additional tools:', allTools.length)
   console.log('[Runtime] Interrupt on tools:', Object.keys(interruptOn).join(', '))

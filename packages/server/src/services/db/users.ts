@@ -1,45 +1,37 @@
 /**
- * User database operations
+ * User database operations (Supabase)
  */
 
 import { v4 as uuid } from 'uuid'
-import { getDb, saveToDisk } from './index.js'
+import { getSupabase } from './supabase-client.js'
 import type { User } from './index.js'
 
 /**
  * Get a user by their ID
  */
-export function getUserById(userId: string): User | null {
-  const database = getDb()
-  const stmt = database.prepare('SELECT * FROM users WHERE user_id = ?')
-  stmt.bind([userId])
+export async function getUserById(userId: string): Promise<User | null> {
+  const { data, error } = await getSupabase()
+    .from('users')
+    .select('*')
+    .eq('user_id', userId)
+    .single()
 
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const user = stmt.getAsObject() as unknown as User
-  stmt.free()
-  return user
+  if (error || !data) return null
+  return data as unknown as User
 }
 
 /**
  * Get a user by their email address
  */
-export function getUserByEmail(email: string): User | null {
-  const database = getDb()
-  const stmt = database.prepare('SELECT * FROM users WHERE email = ?')
-  stmt.bind([email.toLowerCase()])
+export async function getUserByEmail(email: string): Promise<User | null> {
+  const { data, error } = await getSupabase()
+    .from('users')
+    .select('*')
+    .eq('email', email.toLowerCase())
+    .single()
 
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const user = stmt.getAsObject() as unknown as User
-  stmt.free()
-  return user
+  if (error || !data) return null
+  return data as unknown as User
 }
 
 /**
@@ -51,27 +43,28 @@ export interface CreateUserInput {
   name?: string
 }
 
-export function createUser(input: CreateUserInput): User {
-  const database = getDb()
+export async function createUser(input: CreateUserInput): Promise<User> {
   const now = Date.now()
   const userId = uuid()
 
-  database.run(
-    `INSERT INTO users (user_id, email, password_hash, name, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [userId, input.email.toLowerCase(), input.passwordHash, input.name || null, now, now]
-  )
-
-  saveToDisk()
-
-  return {
+  const user: User = {
     user_id: userId,
     email: input.email.toLowerCase(),
     password_hash: input.passwordHash,
     name: input.name || null,
+    tier_id: 1, // Default to Tier 1 (Free)
+    is_admin: 0,
     created_at: now,
     updated_at: now
   }
+
+  const { error } = await getSupabase()
+    .from('users')
+    .insert(user)
+
+  if (error) throw new Error(`createUser: ${error.message}`)
+
+  return user
 }
 
 /**
@@ -82,30 +75,26 @@ export interface UpdateUserInput {
   passwordHash?: string
 }
 
-export function updateUser(userId: string, updates: UpdateUserInput): User | null {
-  const database = getDb()
-  const existing = getUserById(userId)
-
+export async function updateUser(userId: string, updates: UpdateUserInput): Promise<User | null> {
+  const existing = await getUserById(userId)
   if (!existing) return null
 
   const now = Date.now()
-  const setClauses: string[] = ['updated_at = ?']
-  const values: (string | number | null)[] = [now]
+  const row: Record<string, unknown> = { updated_at: now }
 
   if (updates.name !== undefined) {
-    setClauses.push('name = ?')
-    values.push(updates.name)
+    row.name = updates.name
   }
   if (updates.passwordHash !== undefined) {
-    setClauses.push('password_hash = ?')
-    values.push(updates.passwordHash)
+    row.password_hash = updates.passwordHash
   }
 
-  values.push(userId)
+  const { error } = await getSupabase()
+    .from('users')
+    .update(row)
+    .eq('user_id', userId)
 
-  database.run(`UPDATE users SET ${setClauses.join(', ')} WHERE user_id = ?`, values)
-
-  saveToDisk()
+  if (error) throw new Error(`updateUser: ${error.message}`)
 
   return getUserById(userId)
 }
@@ -113,14 +102,16 @@ export function updateUser(userId: string, updates: UpdateUserInput): User | nul
 /**
  * Delete a user
  */
-export function deleteUser(userId: string): boolean {
-  const database = getDb()
-  const existing = getUserById(userId)
-
+export async function deleteUser(userId: string): Promise<boolean> {
+  const existing = await getUserById(userId)
   if (!existing) return false
 
-  database.run('DELETE FROM users WHERE user_id = ?', [userId])
-  saveToDisk()
+  const { error } = await getSupabase()
+    .from('users')
+    .delete()
+    .eq('user_id', userId)
+
+  if (error) throw new Error(`deleteUser: ${error.message}`)
 
   return true
 }
@@ -128,6 +119,7 @@ export function deleteUser(userId: string): boolean {
 /**
  * Check if an email is already registered
  */
-export function isEmailTaken(email: string): boolean {
-  return getUserByEmail(email) !== null
+export async function isEmailTaken(email: string): Promise<boolean> {
+  const user = await getUserByEmail(email)
+  return user !== null
 }

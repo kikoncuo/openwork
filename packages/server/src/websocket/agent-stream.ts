@@ -2,7 +2,7 @@ import { Socket } from 'socket.io'
 import { HumanMessage } from '@langchain/core/messages'
 import { Command } from '@langchain/langgraph'
 import { createAgentRuntime } from '../services/agent/runtime.js'
-import { getThread, setThreadNeedsAttention } from '../services/db/index.js'
+import { getThread, updateThread, setThreadNeedsAttention, appendThreadSearchText } from '../services/db/index.js'
 import { broadcastToUser } from './index.js'
 import { resolveThreadApproval, hasPendingApproval } from '../services/apps/whatsapp/agent-handler.js'
 import type { HITLDecision } from '../services/types.js'
@@ -33,9 +33,68 @@ function checkForInterrupt(output: unknown): boolean {
   return false
 }
 
+/**
+ * Extract text content from a message in stream data.
+ * Used to build searchable content for thread search functionality.
+ * Skips tool calls and system messages, extracting only human/assistant text.
+ */
+function extractMessageContent(data: unknown): string {
+  if (!data || typeof data !== 'object') return ''
+
+  // Handle array of messages (from 'messages' mode)
+  if (Array.isArray(data)) {
+    return data
+      .map(msg => extractSingleMessageContent(msg))
+      .filter(Boolean)
+      .join(' ')
+  }
+
+  // Handle single message tuple [message, metadata]
+  const tuple = data as [unknown, unknown]
+  if (tuple.length === 2 && tuple[0] && typeof tuple[0] === 'object') {
+    return extractSingleMessageContent(tuple[0])
+  }
+
+  return ''
+}
+
+/**
+ * Extract text content from a single message object.
+ */
+function extractSingleMessageContent(msg: unknown): string {
+  if (!msg || typeof msg !== 'object') return ''
+
+  const msgObj = msg as Record<string, unknown>
+
+  // Get message type/role
+  const type = msgObj.type || msgObj.role || (typeof msgObj._getType === 'function' ? msgObj._getType() : null)
+
+  // Skip tool messages
+  if (type === 'tool' || type === 'tool_result') return ''
+
+  // Extract content
+  const content = msgObj.content
+
+  if (typeof content === 'string') {
+    return content
+  }
+
+  // Handle array content (text blocks)
+  if (Array.isArray(content)) {
+    return content
+      .filter((block): block is { type: string; text?: string } =>
+        typeof block === 'object' && block !== null && block.type === 'text'
+      )
+      .map(block => block.text || '')
+      .join(' ')
+  }
+
+  return ''
+}
+
 export function registerAgentStreamHandlers(socket: Socket): void {
   // Handle agent invocation with streaming
-  socket.on('agent:invoke', async ({ threadId, message, modelId }: { threadId: string; message: string; modelId?: string }) => {
+  socket.on('agent:invoke', async ({ threadId, message, modelId, planMode }: { threadId: string; message: string; modelId?: string; planMode?: boolean }) => {
     const channel = `agent:stream:${threadId}`
     const userId = socket.user?.userId
 
@@ -59,7 +118,7 @@ export function registerAgentStreamHandlers(socket: Socket): void {
 
     try {
       // Verify thread exists and user has access
-      const thread = getThread(threadId)
+      const thread = await getThread(threadId)
 
       // Check ownership
       if (!thread || thread.user_id !== userId) {
@@ -81,7 +140,15 @@ export function registerAgentStreamHandlers(socket: Socket): void {
         return
       }
 
-      const agent = await createAgentRuntime({ threadId, modelId })
+      // Persist plan_mode to thread metadata for resume support
+      if (planMode !== undefined) {
+        const existingMetadata = thread.metadata ? JSON.parse(thread.metadata as string) : {}
+        await updateThread(threadId, {
+          metadata: JSON.stringify({ ...existingMetadata, plan_mode: planMode })
+        })
+      }
+
+      const agent = await createAgentRuntime({ threadId, modelId, socket, planMode: planMode || false })
       const humanMessage = new HumanMessage(message)
 
       // Stream with both modes
@@ -97,6 +164,8 @@ export function registerAgentStreamHandlers(socket: Socket): void {
       )
 
       let interruptDetected = false
+      // Accumulate message content for search indexing
+      let accumulatedContent = message // Start with the user's input message
 
       for await (const chunk of stream) {
         if (abortController.signal.aborted) break
@@ -106,6 +175,14 @@ export function registerAgentStreamHandlers(socket: Socket): void {
         // Check for interrupt in values mode
         if (mode === 'values' && checkForInterrupt(data)) {
           interruptDetected = true
+        }
+
+        // Extract message content for search indexing
+        if (mode === 'messages') {
+          const content = extractMessageContent(data)
+          if (content) {
+            accumulatedContent += ' ' + content
+          }
         }
 
         // Forward raw stream events
@@ -120,9 +197,14 @@ export function registerAgentStreamHandlers(socket: Socket): void {
       if (!abortController.signal.aborted) {
         socket.emit(channel, { type: 'done' })
 
+        // Update search_text with accumulated message content
+        if (accumulatedContent.trim()) {
+          await appendThreadSearchText(threadId, accumulatedContent)
+        }
+
         // If interrupt was detected, set needs_attention on the thread
         if (interruptDetected && userId) {
-          setThreadNeedsAttention(threadId, true)
+          await setThreadNeedsAttention(threadId, true)
           broadcastToUser(userId, 'thread:updated', {
             thread_id: threadId,
             needs_attention: true
@@ -156,7 +238,7 @@ export function registerAgentStreamHandlers(socket: Socket): void {
     console.log('[Agent] Received resume request:', { threadId, command, modelId, userId })
 
     // Verify thread exists and user has access
-    const thread = getThread(threadId)
+    const thread = await getThread(threadId)
 
     // Check ownership
     if (!thread || thread.user_id !== userId) {
@@ -213,7 +295,17 @@ export function registerAgentStreamHandlers(socket: Socket): void {
     activeRuns.set(threadId, abortController)
 
     try {
-      const agent = await createAgentRuntime({ threadId, modelId })
+      // Read plan_mode from thread metadata (persisted during invoke)
+      const resumeThread = await getThread(threadId)
+      let resumePlanMode = false
+      if (resumeThread?.metadata) {
+        try {
+          const meta = typeof resumeThread.metadata === 'string' ? JSON.parse(resumeThread.metadata) : resumeThread.metadata
+          resumePlanMode = meta.plan_mode === true
+        } catch { /* ignore parse errors */ }
+      }
+
+      const agent = await createAgentRuntime({ threadId, modelId, socket, planMode: resumePlanMode })
       const config = {
         configurable: { thread_id: threadId },
         signal: abortController.signal,
@@ -224,6 +316,7 @@ export function registerAgentStreamHandlers(socket: Socket): void {
       const stream = await (agent as any).stream(new Command({ resume: resumeValue }), config)
 
       let interruptDetected = false
+      let accumulatedContent = ''
 
       for await (const chunk of stream) {
         if (abortController.signal.aborted) break
@@ -233,6 +326,14 @@ export function registerAgentStreamHandlers(socket: Socket): void {
         // Check for new interrupt in values mode
         if (mode === 'values' && checkForInterrupt(data)) {
           interruptDetected = true
+        }
+
+        // Extract message content for search indexing
+        if (mode === 'messages') {
+          const content = extractMessageContent(data)
+          if (content) {
+            accumulatedContent += ' ' + content
+          }
         }
 
         socket.emit(channel, {
@@ -245,9 +346,14 @@ export function registerAgentStreamHandlers(socket: Socket): void {
       if (!abortController.signal.aborted) {
         socket.emit(channel, { type: 'done' })
 
+        // Update search_text with accumulated message content
+        if (accumulatedContent.trim()) {
+          await appendThreadSearchText(threadId, accumulatedContent)
+        }
+
         // If a new interrupt was detected, set needs_attention
         if (interruptDetected && userId) {
-          setThreadNeedsAttention(threadId, true)
+          await setThreadNeedsAttention(threadId, true)
           broadcastToUser(userId, 'thread:updated', {
             thread_id: threadId,
             needs_attention: true
@@ -281,7 +387,7 @@ export function registerAgentStreamHandlers(socket: Socket): void {
     console.log('[Agent] Received interrupt decision:', { threadId, decision: decision.type, userId })
 
     // Verify thread exists and user has access
-    const thread = getThread(threadId)
+    const thread = await getThread(threadId)
 
     // Check ownership
     if (!thread || thread.user_id !== userId) {
@@ -325,7 +431,7 @@ export function registerAgentStreamHandlers(socket: Socket): void {
     activeRuns.set(threadId, abortController)
 
     try {
-      const agent = await createAgentRuntime({ threadId })
+      const agent = await createAgentRuntime({ threadId, socket })
       const config = {
         configurable: { thread_id: threadId },
         signal: abortController.signal,
@@ -338,6 +444,7 @@ export function registerAgentStreamHandlers(socket: Socket): void {
         const stream = await (agent as any).stream(null, config)
 
         let interruptDetected = false
+        let accumulatedContent = ''
 
         for await (const chunk of stream) {
           if (abortController.signal.aborted) break
@@ -347,6 +454,14 @@ export function registerAgentStreamHandlers(socket: Socket): void {
           // Check for new interrupt in values mode
           if (mode === 'values' && checkForInterrupt(data)) {
             interruptDetected = true
+          }
+
+          // Extract message content for search indexing
+          if (mode === 'messages') {
+            const content = extractMessageContent(data)
+            if (content) {
+              accumulatedContent += ' ' + content
+            }
           }
 
           socket.emit(channel, {
@@ -359,9 +474,14 @@ export function registerAgentStreamHandlers(socket: Socket): void {
         if (!abortController.signal.aborted) {
           socket.emit(channel, { type: 'done' })
 
+          // Update search_text with accumulated message content
+          if (accumulatedContent.trim()) {
+            await appendThreadSearchText(threadId, accumulatedContent)
+          }
+
           // If a new interrupt was detected, set needs_attention
           if (interruptDetected && userId) {
-            setThreadNeedsAttention(threadId, true)
+            await setThreadNeedsAttention(threadId, true)
             broadcastToUser(userId, 'thread:updated', {
               thread_id: threadId,
               needs_attention: true
@@ -391,9 +511,9 @@ export function registerAgentStreamHandlers(socket: Socket): void {
   })
 
   // Handle cancellation
-  socket.on('agent:cancel', ({ threadId }: { threadId: string }) => {
+  socket.on('agent:cancel', async ({ threadId }: { threadId: string }) => {
     const userId = socket.user?.userId
-    const thread = getThread(threadId)
+    const thread = await getThread(threadId)
 
     // Only allow cancellation of own threads
     if (thread && thread.user_id === userId) {

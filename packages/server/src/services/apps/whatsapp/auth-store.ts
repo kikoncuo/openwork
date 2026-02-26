@@ -1,6 +1,6 @@
 /**
- * WhatsApp Auth Store - SQLite-based authentication state storage for Baileys
- * Adapted from whatsapp-rest/auth-store.ts to use local SQLite instead of Supabase
+ * WhatsApp Auth Store - Supabase-based authentication state storage for Baileys
+ * Adapted from SQLite version to use Supabase for persistence
  */
 
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto'
@@ -8,7 +8,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { dirname, join } from 'path'
 import type { AuthenticationCreds, SignalDataTypeMap } from 'baileys'
 import { initAuthCreds, BufferJSON } from 'baileys'
-import { getDb, saveToDisk } from '../../db/index.js'
+import { getSupabase } from '../../db/supabase-client.js'
 import { getOpenworkDir } from '../../storage.js'
 
 const ALGORITHM = 'aes-256-gcm'
@@ -77,25 +77,25 @@ export interface SQLiteAuthState {
 }
 
 /**
- * SQLite-based auth store for Baileys
- * Since this is a local desktop app, we don't need userId - there's only one user
+ * SQLite-based auth store for Baileys (now backed by Supabase)
  */
 export class SQLiteAuthStore {
   private tableName = 'whatsapp_auth_state'
 
   /**
-   * Get the authentication state from SQLite for a specific user
+   * Get the authentication state from Supabase for a specific user
    */
   async getAuthState(userId: string): Promise<SQLiteAuthState> {
     let creds: AuthenticationCreds
 
-    const db = getDb()
-    const stmt = db.prepare(`SELECT data FROM ${this.tableName} WHERE key = ? AND user_id = ?`)
-    stmt.bind(['creds', userId])
+    const { data: row, error } = await getSupabase()
+      .from(this.tableName)
+      .select('*')
+      .eq('key', 'creds')
+      .eq('user_id', userId)
+      .single()
 
-    if (stmt.step()) {
-      const row = stmt.getAsObject() as { data: string }
-      stmt.free()
+    if (!error && row) {
       try {
         const decrypted = decrypt(row.data)
         creds = JSON.parse(decrypted, BufferJSON.reviver)
@@ -104,7 +104,6 @@ export class SQLiteAuthStore {
         creds = initAuthCreds()
       }
     } else {
-      stmt.free()
       creds = initAuthCreds()
     }
 
@@ -112,12 +111,12 @@ export class SQLiteAuthStore {
       const encrypted = encrypt(JSON.stringify(creds, BufferJSON.replacer))
       const now = Date.now()
 
-      const database = getDb()
-      database.run(
-        `INSERT OR REPLACE INTO ${this.tableName} (key, user_id, data, updated_at) VALUES (?, ?, ?, ?)`,
-        ['creds', userId, encrypted, now]
-      )
-      saveToDisk()
+      await getSupabase()
+        .from(this.tableName)
+        .upsert(
+          { key: 'creds', user_id: userId, data: encrypted, updated_at: now },
+          { onConflict: 'key,user_id' }
+        )
     }
 
     const keys = {
@@ -126,21 +125,17 @@ export class SQLiteAuthStore {
 
         if (ids.length === 0) return result
 
-        const database = getDb()
         const keyNames = ids.map(id => `${type}-${id}`)
 
-        // We can't bind array for IN clause easily in sql.js, so we construct placeholders
-        // But we ALSO need to filter by user_id for EACH key potentially, or just WHERE key IN (...) AND user_id = ?
-        // Since (key, user_id) is PK, this is safe.
-        const placeholders = keyNames.map(() => '?').join(',')
+        const { data: rows, error: fetchError } = await getSupabase()
+          .from(this.tableName)
+          .select('key, data')
+          .in('key', keyNames)
+          .eq('user_id', userId)
 
-        const stmt = database.prepare(
-          `SELECT key, data FROM ${this.tableName} WHERE key IN (${placeholders}) AND user_id = ?`
-        )
-        stmt.bind([...keyNames, userId])
+        if (fetchError || !rows) return result
 
-        while (stmt.step()) {
-          const row = stmt.getAsObject() as { key: string; data: string }
+        for (const row of rows) {
           const id = row.key.replace(`${type}-`, '')
           try {
             const decrypted = decrypt(row.data)
@@ -149,13 +144,11 @@ export class SQLiteAuthStore {
             console.warn(`[WhatsApp Auth] Failed to decrypt key ${row.key}`)
           }
         }
-        stmt.free()
 
         return result
       },
 
       set: async (data: { [K in keyof SignalDataTypeMap]?: { [id: string]: SignalDataTypeMap[K] | null } }): Promise<void> => {
-        const database = getDb()
         const now = Date.now()
 
         for (const [type, entries] of Object.entries(data)) {
@@ -165,19 +158,23 @@ export class SQLiteAuthStore {
             const key = `${type}-${id}`
             if (value === null) {
               // Delete the key for this user
-              database.run(`DELETE FROM ${this.tableName} WHERE key = ? AND user_id = ?`, [key, userId])
+              await getSupabase()
+                .from(this.tableName)
+                .delete()
+                .eq('key', key)
+                .eq('user_id', userId)
             } else {
               // Upsert the key for this user
               const encrypted = encrypt(JSON.stringify(value, BufferJSON.replacer))
-              database.run(
-                `INSERT OR REPLACE INTO ${this.tableName} (key, user_id, data, updated_at) VALUES (?, ?, ?, ?)`,
-                [key, userId, encrypted, now]
-              )
+              await getSupabase()
+                .from(this.tableName)
+                .upsert(
+                  { key, user_id: userId, data: encrypted, updated_at: now },
+                  { onConflict: 'key,user_id' }
+                )
             }
           }
         }
-
-        saveToDisk()
       },
     }
 
@@ -188,9 +185,10 @@ export class SQLiteAuthStore {
    * Delete all authentication state for a user (logout)
    */
   async deleteAuthState(userId: string): Promise<void> {
-    const db = getDb()
-    db.run(`DELETE FROM ${this.tableName} WHERE user_id = ?`, [userId])
-    saveToDisk()
+    await getSupabase()
+      .from(this.tableName)
+      .delete()
+      .eq('user_id', userId)
     console.log(`[WhatsApp Auth] Deleted auth state for user ${userId}`)
   }
 
@@ -198,29 +196,29 @@ export class SQLiteAuthStore {
    * Check if there's existing auth state for a user
    */
   async hasAuthState(userId: string): Promise<boolean> {
-    const db = getDb()
-    const stmt = db.prepare(`SELECT key FROM ${this.tableName} WHERE key = ? AND user_id = ?`)
-    stmt.bind(['creds', userId])
-    const hasData = stmt.step()
-    stmt.free()
-    return hasData
+    const { data, error } = await getSupabase()
+      .from(this.tableName)
+      .select('key')
+      .eq('key', 'creds')
+      .eq('user_id', userId)
+      .single()
+
+    return !error && !!data
   }
 
   /**
    * Get all user IDs that have authentication state
    */
   async getAllUserIds(): Promise<string[]> {
-    const db = getDb()
-    const stmt = db.prepare(`SELECT DISTINCT user_id FROM ${this.tableName}`)
-    const userIds: string[] = []
+    const { data, error } = await getSupabase()
+      .from(this.tableName)
+      .select('user_id')
 
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as { user_id: string }
-      userIds.push(row.user_id)
-    }
-    stmt.free()
+    if (error || !data) return []
 
-    return userIds
+    // Deduplicate user_ids
+    const uniqueIds = [...new Set(data.map((row: { user_id: string }) => row.user_id))]
+    return uniqueIds
   }
 }
 

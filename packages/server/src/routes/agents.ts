@@ -11,11 +11,14 @@ import {
   getAgentThreadCount,
   getAgentsByUserId,
   getDefaultAgentForUser,
+  getAgentToolConfigs,
+  saveAgentToolConfigs,
   AGENT_ICONS,
   AGENT_COLORS,
   type CreateAgentInput,
   type UpdateAgentInput,
-  type UpdateAgentConfigInput
+  type UpdateAgentConfigInput,
+  type ToolConfigInput
 } from '../services/db/agents.js'
 import { requireAuth } from '../middleware/auth.js'
 
@@ -28,7 +31,7 @@ router.use(requireAuth)
 router.get('/', async (req, res) => {
   try {
     const userId = req.user!.userId
-    const agents = getAgentsByUserId(userId)
+    const agents = await getAgentsByUserId(userId)
     res.json(agents)
   } catch (error) {
     console.error('[Agents] List error:', error)
@@ -50,11 +53,11 @@ router.get('/colors', async (_req, res) => {
 router.get('/default', async (req, res) => {
   try {
     const userId = req.user!.userId
-    let agent = getDefaultAgentForUser(userId)
+    let agent = await getDefaultAgentForUser(userId)
 
     // If no default agent, create one
     if (!agent) {
-      agent = createAgent({
+      agent = await createAgent({
         name: 'BUDDY',
         color: '#8B5CF6',
         icon: 'bot',
@@ -74,7 +77,7 @@ router.get('/default', async (req, res) => {
 router.get('/:agentId', async (req, res) => {
   try {
     const userId = req.user!.userId
-    const agent = getAgent(req.params.agentId)
+    const agent = await getAgent(req.params.agentId)
     if (!agent) {
       res.status(404).json({ error: 'Agent not found' })
       return
@@ -95,12 +98,12 @@ router.get('/:agentId', async (req, res) => {
 router.get('/:agentId/thread-count', async (req, res) => {
   try {
     const userId = req.user!.userId
-    const agent = getAgent(req.params.agentId)
+    const agent = await getAgent(req.params.agentId)
     if (!agent || agent.user_id !== userId) {
       res.status(403).json({ error: 'Access denied' })
       return
     }
-    const count = getAgentThreadCount(req.params.agentId)
+    const count = await getAgentThreadCount(req.params.agentId)
     res.json({ count })
   } catch (error) {
     console.error('[Agents] Thread count error:', error)
@@ -112,12 +115,12 @@ router.get('/:agentId/thread-count', async (req, res) => {
 router.get('/:agentId/config', async (req, res) => {
   try {
     const userId = req.user!.userId
-    const agent = getAgent(req.params.agentId)
+    const agent = await getAgent(req.params.agentId)
     if (!agent || agent.user_id !== userId) {
       res.status(403).json({ error: 'Access denied' })
       return
     }
-    const config = getAgentConfig(req.params.agentId)
+    const config = await getAgentConfig(req.params.agentId)
     res.json(config)
   } catch (error) {
     console.error('[Agents] Get config error:', error)
@@ -129,13 +132,13 @@ router.get('/:agentId/config', async (req, res) => {
 router.patch('/:agentId/config', async (req, res) => {
   try {
     const userId = req.user!.userId
-    const agent = getAgent(req.params.agentId)
+    const agent = await getAgent(req.params.agentId)
     if (!agent || agent.user_id !== userId) {
       res.status(403).json({ error: 'Access denied' })
       return
     }
     const updates: UpdateAgentConfigInput = req.body
-    const config = updateAgentConfig(req.params.agentId, updates)
+    const config = await updateAgentConfig(req.params.agentId, updates)
     res.json(config)
   } catch (error) {
     console.error('[Agents] Update config error:', error)
@@ -151,7 +154,7 @@ router.post('/', async (req, res) => {
       ...req.body,
       user_id: userId // Always set user_id from auth
     }
-    const agent = createAgent(input)
+    const agent = await createAgent(input)
     res.json(agent)
   } catch (error) {
     console.error('[Agents] Create error:', error)
@@ -163,7 +166,7 @@ router.post('/', async (req, res) => {
 router.patch('/:agentId', async (req, res) => {
   try {
     const userId = req.user!.userId
-    const existing = getAgent(req.params.agentId)
+    const existing = await getAgent(req.params.agentId)
     if (!existing) {
       res.status(404).json({ error: 'Agent not found' })
       return
@@ -173,7 +176,7 @@ router.patch('/:agentId', async (req, res) => {
       return
     }
     const updates: UpdateAgentInput = req.body
-    const agent = updateAgent(req.params.agentId, updates)
+    const agent = await updateAgent(req.params.agentId, updates)
     if (!agent) {
       res.status(404).json({ error: 'Agent not found' })
       return
@@ -189,7 +192,7 @@ router.patch('/:agentId', async (req, res) => {
 router.delete('/:agentId', async (req, res) => {
   try {
     const userId = req.user!.userId
-    const existing = getAgent(req.params.agentId)
+    const existing = await getAgent(req.params.agentId)
     if (!existing) {
       res.status(404).json({ error: 'Agent not found' })
       return
@@ -198,11 +201,65 @@ router.delete('/:agentId', async (req, res) => {
       res.status(403).json({ error: 'Access denied' })
       return
     }
-    const result = deleteAgent(req.params.agentId)
+    const result = await deleteAgent(req.params.agentId)
     res.json(result)
   } catch (error) {
     console.error('[Agents] Delete error:', error)
     res.status(500).json({ error: 'Failed to delete agent' })
+  }
+})
+
+// Get agent tool configs
+router.get('/:agentId/tools', async (req, res) => {
+  try {
+    const userId = req.user!.userId
+    const agent = await getAgent(req.params.agentId)
+    if (!agent || agent.user_id !== userId) {
+      res.status(403).json({ error: 'Access denied' })
+      return
+    }
+    const configs = await getAgentToolConfigs(req.params.agentId)
+    // Convert to a simpler format for frontend
+    res.json(configs.map(c => ({
+      id: c.tool_id,
+      enabled: c.enabled === 1,
+      requireApproval: c.require_approval === 1
+    })))
+  } catch (error) {
+    console.error('[Agents] Get tool configs error:', error)
+    res.status(500).json({ error: 'Failed to get tool configs' })
+  }
+})
+
+// Save agent tool configs (bulk update)
+router.put('/:agentId/tools', async (req, res) => {
+  try {
+    const userId = req.user!.userId
+    const agent = await getAgent(req.params.agentId)
+    if (!agent || agent.user_id !== userId) {
+      res.status(403).json({ error: 'Access denied' })
+      return
+    }
+
+    // Expected format: Array<{ id: string; enabled: boolean; requireApproval?: boolean }>
+    const configs = req.body as Array<{ id: string; enabled: boolean; requireApproval?: boolean }>
+    const toolConfigs: ToolConfigInput[] = configs.map(c => ({
+      tool_id: c.id,
+      enabled: c.enabled,
+      require_approval: c.requireApproval ?? false
+    }))
+
+    const saved = await saveAgentToolConfigs(req.params.agentId, toolConfigs)
+
+    // Return in frontend-friendly format
+    res.json(saved.map(c => ({
+      id: c.tool_id,
+      enabled: c.enabled === 1,
+      requireApproval: c.require_approval === 1
+    })))
+  } catch (error) {
+    console.error('[Agents] Save tool configs error:', error)
+    res.status(500).json({ error: 'Failed to save tool configs' })
   }
 })
 

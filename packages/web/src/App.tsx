@@ -5,9 +5,12 @@ import { RightPanel } from '@/components/panels/RightPanel'
 import { ResizeHandle } from '@/components/ui/resizable'
 import { AgentBadge } from '@/components/ui/AgentBadge'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
+import { GlobalSettingsDialog } from '@/components/settings/GlobalSettingsDialog'
+import { AgentSettingsDialog } from '@/components/settings/AgentSettingsDialog'
 import { AuthGuard } from '@/components/auth/AuthGuard'
 import { useAppStore } from '@/lib/store'
 import { ThreadProvider } from '@/lib/thread-context'
+import { initClientToolHandler, stopClientToolHandler } from '@/services/client-tool-handler'
 
 // Badge requires ~235 screen pixels to display with comfortable margin
 const BADGE_MIN_SCREEN_WIDTH = 235
@@ -19,7 +22,21 @@ const RIGHT_MAX = 450
 const RIGHT_DEFAULT = 320
 
 function App(): React.JSX.Element {
-  const { currentThreadId, loadThreads, createThread, loadAgents, settingsOpen, closeSettings, settingsAgentId } = useAppStore()
+  const {
+    currentThreadId,
+    loadThreads,
+    createThread,
+    loadAgents,
+    loadUserTier,
+    settingsOpen,
+    closeSettings,
+    settingsAgentId,
+    globalSettingsOpen,
+    closeGlobalSettings,
+    agentSettingsOpen,
+    closeAgentSettings,
+    agentSettingsAgentId
+  } = useAppStore()
   const [isLoading, setIsLoading] = useState(true)
   const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT)
   const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT)
@@ -101,10 +118,22 @@ function App(): React.JSX.Element {
         // Load agents first (this also creates default agent if needed)
         await loadAgents()
         await loadThreads()
+        // Load user tier for tier-based model management
+        await loadUserTier()
         // Create a default thread if none exist
         const threads = useAppStore.getState().threads
         if (threads.length === 0) {
           await createThread()
+        }
+
+        // Initialize client tool handler for local sandbox if configured
+        try {
+          const sandboxConfig = await window.api.sandbox.getConfig()
+          if (sandboxConfig.type === 'local') {
+            initClientToolHandler(sandboxConfig.localHost, sandboxConfig.localPort)
+          }
+        } catch (error) {
+          console.warn('[App] Failed to load sandbox config:', error)
         }
       } catch (error) {
         console.error('Failed to initialize:', error)
@@ -113,7 +142,12 @@ function App(): React.JSX.Element {
       }
     }
     init()
-  }, [loadThreads, createThread, loadAgents])
+
+    // Cleanup on unmount
+    return () => {
+      stopClientToolHandler()
+    }
+  }, [loadThreads, createThread, loadAgents, loadUserTier])
 
   if (isLoading) {
     return (
@@ -140,12 +174,27 @@ function App(): React.JSX.Element {
         }}
       />
 
-      {/* Settings Dialog - per-agent settings */}
+      {/* Legacy Settings Dialog - per-agent settings (to be removed) */}
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={(open) => !open && closeSettings()}
         agentId={settingsAgentId}
       />
+
+      {/* Global Settings Dialog */}
+      <GlobalSettingsDialog
+        open={globalSettingsOpen}
+        onOpenChange={(open) => !open && closeGlobalSettings()}
+      />
+
+      {/* Agent Settings Dialog */}
+      {agentSettingsAgentId && (
+        <AgentSettingsDialog
+          open={agentSettingsOpen}
+          onOpenChange={(open) => !open && closeAgentSettings()}
+          agentId={agentSettingsAgentId}
+        />
+      )}
 
       {/* Left + Center column */}
       <div className="flex flex-col flex-1 min-w-0">

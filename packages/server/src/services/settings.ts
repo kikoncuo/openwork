@@ -65,18 +65,56 @@ export function deleteSetting(key: string): void {
 }
 
 // MCP Server types
-export interface MCPServerConfig {
+interface MCPServerConfigBase {
   id: string
   name: string
+  enabled: boolean
+}
+
+export interface MCPServerStdioConfig extends MCPServerConfigBase {
+  transport: 'stdio'
   command: string
   args: string[]
-  enabled: boolean
   env?: Record<string, string>
+}
+
+export interface MCPServerHttpConfig extends MCPServerConfigBase {
+  transport: 'http'
+  url: string
+  headers?: Record<string, string>
+  auth?: {
+    type: 'oauth' | 'bearer' | 'none'
+    bearerToken?: string
+    oauthServerId?: string
+  }
+}
+
+export type MCPServerConfig = MCPServerStdioConfig | MCPServerHttpConfig
+
+/**
+ * Normalize a loaded server config for backwards compatibility.
+ * Old configs without a transport field but with command are treated as stdio.
+ */
+function normalizeMcpServer(raw: Record<string, unknown>): MCPServerConfig {
+  if (raw.transport === 'http') {
+    return raw as unknown as MCPServerHttpConfig
+  }
+  // Legacy or explicit stdio
+  return {
+    transport: 'stdio',
+    id: raw.id as string,
+    name: raw.name as string,
+    command: raw.command as string,
+    args: (raw.args as string[]) || [],
+    enabled: raw.enabled as boolean,
+    ...(raw.env ? { env: raw.env as Record<string, string> } : {})
+  }
 }
 
 // Get all MCP server configs
 export function getMcpServers(): MCPServerConfig[] {
-  return getSetting<MCPServerConfig[]>('mcpServers', [])
+  const raw = getSetting<Record<string, unknown>[]>('mcpServers', [])
+  return raw.map(normalizeMcpServer)
 }
 
 // Get enabled MCP servers
@@ -117,7 +155,7 @@ export function getToolConfigMap(): Record<string, ToolConfig> {
 }
 
 export function getDefaultModel(): string {
-  return getSetting<string>('defaultModel', 'claude-sonnet-4-5-20250929')
+  return getSetting<string>('defaultModel', 'claude-opus-4-5-20251101')
 }
 
 export function setDefaultModel(modelId: string): void {
@@ -144,4 +182,29 @@ export function addRecentWorkspace(workspacePath: string): void {
   const trimmed = filtered.slice(0, MAX_RECENT_WORKSPACES)
 
   setSetting('recentWorkspaces', trimmed)
+}
+
+// Sandbox backend configuration
+export interface SandboxBackendConfig {
+  type: 'buddy' | 'local'  // 'buddy' = E2B Cloud, 'local' = Docker on client
+  localHost: string
+  localPort: number
+}
+
+const DEFAULT_SANDBOX_CONFIG: SandboxBackendConfig = {
+  type: 'buddy',
+  localHost: 'localhost',
+  localPort: 8080
+}
+
+export function getSandboxBackendConfig(): SandboxBackendConfig {
+  return getSetting<SandboxBackendConfig>('sandboxBackend', DEFAULT_SANDBOX_CONFIG)
+}
+
+export function setSandboxBackendConfig(config: SandboxBackendConfig): void {
+  setSetting('sandboxBackend', config)
+}
+
+export function getSandboxBackendType(): 'buddy' | 'local' {
+  return getSandboxBackendConfig().type
 }

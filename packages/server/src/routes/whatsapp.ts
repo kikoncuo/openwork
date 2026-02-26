@@ -39,7 +39,7 @@ router.post('/disconnect', requireAuth, async (req, res) => {
 router.get('/status', requireAuth, async (req, res) => {
   try {
     const userId = req.user!.userId
-    res.json(whatsappService.getConnectionStatus(userId))
+    res.json(await whatsappService.getConnectionStatus(userId))
   } catch (error) {
     console.error('[WhatsApp] Status error:', error)
     res.status(500).json({ error: 'Failed to get status' })
@@ -51,7 +51,7 @@ router.get('/contacts', requireAuth, async (req, res) => {
   try {
     const userId = req.user!.userId
     const query = req.query.query as string | undefined
-    res.json(whatsappService.getContacts(userId, query))
+    res.json(await whatsappService.getContacts(userId, query))
   } catch (error) {
     console.error('[WhatsApp] Get contacts error:', error)
     res.status(500).json({ error: 'Failed to get contacts' })
@@ -63,7 +63,7 @@ router.get('/chats', requireAuth, async (req, res) => {
   try {
     const userId = req.user!.userId
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined
-    res.json(whatsappService.getChats(userId, limit))
+    res.json(await whatsappService.getChats(userId, limit))
   } catch (error) {
     console.error('[WhatsApp] Get chats error:', error)
     res.status(500).json({ error: 'Failed to get chats' })
@@ -84,7 +84,7 @@ router.get('/messages/search', requireAuth, async (req, res) => {
     const limitParam = req.query.limit
     const limit = limitParam ? parseInt(Array.isArray(limitParam) ? String(limitParam[0]) : String(limitParam), 10) : undefined
 
-    res.json(whatsappService.searchMessages(userId, query, chatJid, limit))
+    res.json(await whatsappService.searchMessages(userId, query, chatJid, limit))
   } catch (error) {
     console.error('[WhatsApp] Search messages error:', error)
     res.status(500).json({ error: 'Failed to search messages' })
@@ -98,7 +98,7 @@ router.get('/chats/:jid/messages', requireAuth, async (req, res) => {
     const jid = decodeURIComponent(String(req.params.jid))
     const limitParam = req.query.limit
     const limit = limitParam ? parseInt(Array.isArray(limitParam) ? String(limitParam[0]) : String(limitParam), 10) : undefined
-    res.json(whatsappService.getMessageHistory(userId, jid, limit))
+    res.json(await whatsappService.getMessageHistory(userId, jid, limit))
   } catch (error) {
     console.error('[WhatsApp] Get history error:', error)
     res.status(500).json({ error: 'Failed to get message history' })
@@ -136,7 +136,7 @@ router.get('/tools', requireAuth, async (req, res) => {
 router.get('/agent/config', requireAuth, async (req, res) => {
   try {
     const userId = req.user!.userId
-    const config = getWhatsAppAgentConfig(userId)
+    const config = await getWhatsAppAgentConfig(userId)
     if (!config) {
       // Return default config if not set
       res.json({
@@ -179,7 +179,7 @@ router.patch('/agent/config', requireAuth, async (req, res) => {
       updates.thread_timeout_minutes = thread_timeout_minutes
     }
 
-    const config = upsertWhatsAppAgentConfig(userId, updates)
+    const config = await upsertWhatsAppAgentConfig(userId, updates)
     res.json({
       enabled: !!config.enabled,
       agent_id: config.agent_id,
@@ -195,7 +195,7 @@ router.patch('/agent/config', requireAuth, async (req, res) => {
 router.get('/agent/mappings', requireAuth, async (req, res) => {
   try {
     const userId = req.user!.userId
-    const mappings = getAllThreadMappings(userId)
+    const mappings = await getAllThreadMappings(userId)
     res.json(mappings)
   } catch (error) {
     console.error('[WhatsApp] Get thread mappings error:', error)

@@ -6,6 +6,7 @@ import { Router } from 'express'
 import { hashPassword, verifyPassword, generateToken } from '../services/auth/index.js'
 import { createUser, getUserByEmail, isEmailTaken, getUserById } from '../services/db/users.js'
 import { requireAuth } from '../middleware/auth.js'
+import { isEmailAllowed } from '../services/db/allowlist.js'
 
 const router = Router()
 
@@ -33,15 +34,21 @@ router.post('/register', async (req, res) => {
       return
     }
 
+    // Check if email is on the approved allowlist
+    if (!(await isEmailAllowed(email))) {
+      res.status(403).json({ error: 'Registration is restricted. Your email is not on the approved list.' })
+      return
+    }
+
     // Check if email is already taken
-    if (isEmailTaken(email)) {
+    if (await isEmailTaken(email)) {
       res.status(409).json({ error: 'Email already registered' })
       return
     }
 
     // Hash password and create user
     const passwordHash = await hashPassword(password)
-    const user = createUser({
+    const user = await createUser({
       email,
       passwordHash,
       name: name || undefined
@@ -54,7 +61,8 @@ router.post('/register', async (req, res) => {
       user: {
         userId: user.user_id,
         email: user.email,
-        name: user.name
+        name: user.name,
+        isAdmin: Boolean(user.is_admin)
       },
       ...tokens
     })
@@ -79,7 +87,7 @@ router.post('/login', async (req, res) => {
     }
 
     // Find user by email
-    const user = getUserByEmail(email)
+    const user = await getUserByEmail(email)
     if (!user) {
       res.status(401).json({ error: 'Invalid email or password' })
       return
@@ -99,7 +107,8 @@ router.post('/login', async (req, res) => {
       user: {
         userId: user.user_id,
         email: user.email,
-        name: user.name
+        name: user.name,
+        isAdmin: Boolean(user.is_admin)
       },
       ...tokens
     })
@@ -126,7 +135,7 @@ router.post('/logout', (_req, res) => {
  */
 router.get('/me', requireAuth, async (req, res) => {
   try {
-    const user = getUserById(req.user!.userId)
+    const user = await getUserById(req.user!.userId)
     if (!user) {
       res.status(404).json({ error: 'User not found' })
       return
@@ -135,7 +144,8 @@ router.get('/me', requireAuth, async (req, res) => {
     res.json({
       userId: user.user_id,
       email: user.email,
-      name: user.name
+      name: user.name,
+      isAdmin: Boolean(user.is_admin)
     })
   } catch (error) {
     console.error('[Auth] Get user error:', error)

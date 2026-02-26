@@ -49,7 +49,7 @@ export interface Run {
 }
 
 // Provider configuration
-export type ProviderId = 'anthropic' | 'openai' | 'google' | 'ollama'
+export type ProviderId = 'anthropic' | 'openai' | 'google' | 'ollama' | 'openrouter'
 
 export interface Provider {
   id: ProviderId

@@ -1,8 +1,8 @@
-import { 
-  FileText, 
-  FolderOpen, 
-  Search, 
-  Edit, 
+import {
+  FileText,
+  FolderOpen,
+  Search,
+  Edit,
   Terminal,
   ListTodo,
   GitBranch,
@@ -13,7 +13,8 @@ import {
   Clock,
   XCircle,
   File,
-  Folder
+  Folder,
+  Database
 } from 'lucide-react'
 import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
@@ -41,6 +42,9 @@ const TOOL_ICONS: Record<string, React.ComponentType<{ className?: string }>> = 
   execute: Terminal,
   write_todos: ListTodo,
   task: GitBranch,
+  web_search: Search,
+  create_dataset: Database,
+  enrich_dataset: Database,
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -53,6 +57,9 @@ const TOOL_LABELS: Record<string, string> = {
   execute: 'Execute Command',
   write_todos: 'Update Tasks',
   task: 'Subagent Task',
+  web_search: 'Search',
+  create_dataset: 'Create Dataset',
+  enrich_dataset: 'Enrich Dataset',
 }
 
 // Tools whose results are shown in the UI panels and don't need verbose display

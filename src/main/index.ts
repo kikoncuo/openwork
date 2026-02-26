@@ -5,6 +5,8 @@ import { registerAgentEntityHandlers } from './ipc/agents'
 import { registerThreadHandlers } from './ipc/threads'
 import { registerModelHandlers } from './ipc/models'
 import { registerWhatsAppHandlers } from './ipc/whatsapp'
+import { registerGoogleWorkspaceHandlers } from './ipc/google-workspace'
+import { registerExaHandlers } from './ipc/exa'
 import { initializeDatabase } from './db'
 
 // Suppress expected errors from LangChain stream handlers when streams are aborted
@@ -125,6 +127,8 @@ app.whenReady().then(async () => {
   registerThreadHandlers(ipcMain)
   registerModelHandlers(ipcMain)
   registerWhatsAppHandlers(ipcMain)
+  registerGoogleWorkspaceHandlers(ipcMain)
+  registerExaHandlers(ipcMain)
 
   createWindow()
 

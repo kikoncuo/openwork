@@ -1,8 +1,8 @@
-import { 
-  FileText, 
-  FolderOpen, 
-  Search, 
-  Edit, 
+import {
+  FileText,
+  FolderOpen,
+  Search,
+  Edit,
   Terminal,
   ListTodo,
   GitBranch,
@@ -13,7 +13,9 @@ import {
   Clock,
   XCircle,
   File,
-  Folder
+  Folder,
+  Database,
+  Globe
 } from 'lucide-react'
 import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
@@ -41,6 +43,9 @@ const TOOL_ICONS: Record<string, React.ComponentType<{ className?: string }>> = 
   execute: Terminal,
   write_todos: ListTodo,
   task: GitBranch,
+  web_search: Globe,
+  create_dataset: Database,
+  enrich_dataset: Database,
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -53,6 +58,9 @@ const TOOL_LABELS: Record<string, string> = {
   execute: 'Execute Command',
   write_todos: 'Update Tasks',
   task: 'Subagent Task',
+  web_search: 'Web Search',
+  create_dataset: 'Create Dataset',
+  enrich_dataset: 'Enrich Dataset',
 }
 
 // Tools whose results are shown in the UI panels and don't need verbose display
@@ -311,7 +319,7 @@ export function ToolCallRenderer({ toolCall, result, isError, needsApproval, isB
 
     switch (toolCall.name) {
       case 'write_todos': {
-        const todos = args.todos as Todo[] | undefined
+        const todos = Array.isArray(args.todos) ? (args.todos as Todo[]) : undefined
         if (todos && todos.length > 0) {
           return <TodosDisplay todos={todos} />
         }
@@ -419,11 +427,34 @@ export function ToolCallRenderer({ toolCall, result, isError, needsApproval, isB
         // When expanded, output is shown in CommandDisplay - just show status
         // When collapsed, show the output preview
         const output = typeof result === 'string' ? result : JSON.stringify(result)
+
+        // Check for image paths in output
+        const imagePathMatch = output.match(/Images saved:\n([\s\S]*?)(?:\n\n|$)/)
+        const imagePaths = imagePathMatch
+          ? imagePathMatch[1].split('\n').map(line => line.replace(/^\s*-\s*/, '').trim()).filter(Boolean)
+          : []
+
+        // Check if output was truncated
+        const wasTruncated = output.includes('[Output truncated to fit token limit')
+
         if (isExpanded) {
           return (
-            <div className="text-xs text-status-nominal flex items-center gap-1.5">
-              <CheckCircle2 className="size-3" />
-              <span>Command completed</span>
+            <div className="space-y-2">
+              <div className="text-xs text-status-nominal flex items-center gap-1.5">
+                <CheckCircle2 className="size-3" />
+                <span>Command completed</span>
+              </div>
+              {imagePaths.length > 0 && (
+                <div className="text-xs text-status-info flex items-center gap-1.5">
+                  <File className="size-3" />
+                  <span>{imagePaths.length} chart(s) saved to sandbox</span>
+                </div>
+              )}
+              {wasTruncated && (
+                <div className="text-xs text-muted-foreground">
+                  Output truncated - check sandbox for full output
+                </div>
+              )}
             </div>
           )
         }
@@ -435,10 +466,21 @@ export function ToolCallRenderer({ toolCall, result, isError, needsApproval, isB
                 <CheckCircle2 className="size-3" />
                 <span>Command completed</span>
               </div>
+              {imagePaths.length > 0 && (
+                <div className="text-xs text-status-info flex items-center gap-1.5">
+                  <File className="size-3" />
+                  <span>{imagePaths.length} chart(s) saved to sandbox</span>
+                </div>
+              )}
               <pre className="text-xs font-mono bg-background rounded-sm p-2 overflow-auto max-h-32 text-muted-foreground whitespace-pre-wrap break-all">
                 {output.slice(0, 500)}
                 {output.length > 500 && '...'}
               </pre>
+              {wasTruncated && (
+                <div className="text-xs text-muted-foreground">
+                  Output truncated - check sandbox for full output
+                </div>
+              )}
             </div>
           )
         }

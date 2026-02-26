@@ -19,6 +19,7 @@ import {
   toggleLearnedInsight,
   type LearnedInsight
 } from '../storage'
+import { getAgentConfig, updateAgentConfig } from '../db/agents'
 
 // Store for non-sensitive settings only (no encryption needed)
 const store = new Store({
@@ -594,6 +595,83 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle('insights:save', async (_event, insights: LearnedInsight[]) => {
     saveLearnedInsights(insights)
+  })
+
+  // ============= AGENT-SPECIFIC CONFIG HANDLERS =============
+  // These read/write to the agent_configs table for per-agent settings
+  // They return null if no agent-specific config exists, allowing UI to fall back to global
+
+  // Agent-specific MCP handlers
+  ipcMain.handle('agent:mcp:list', async (_event, agentId: string) => {
+    const config = getAgentConfig(agentId)
+    return config?.mcp_servers ? JSON.parse(config.mcp_servers) : null
+  })
+
+  ipcMain.handle('agent:mcp:save', async (_event, { agentId, servers }: { agentId: string; servers: MCPServerConfig[] }) => {
+    updateAgentConfig(agentId, { mcp_servers: servers })
+  })
+
+  // Agent-specific tool config handlers
+  ipcMain.handle('agent:tools:getConfigs', async (_event, agentId: string) => {
+    const config = getAgentConfig(agentId)
+    return config?.tool_configs ? JSON.parse(config.tool_configs) : null
+  })
+
+  ipcMain.handle('agent:tools:saveConfigs', async (_event, { agentId, configs }: { agentId: string; configs: ToolConfig[] }) => {
+    updateAgentConfig(agentId, { tool_configs: configs })
+  })
+
+  // Agent-specific prompt handlers
+  ipcMain.handle('agent:prompt:getCustom', async (_event, agentId: string) => {
+    const config = getAgentConfig(agentId)
+    // Return undefined (not null) if no config, so UI can distinguish "no agent config" from "empty prompt"
+    return config ? config.custom_prompt : undefined
+  })
+
+  ipcMain.handle('agent:prompt:setCustom', async (_event, { agentId, prompt }: { agentId: string; prompt: string | null }) => {
+    updateAgentConfig(agentId, { custom_prompt: prompt })
+  })
+
+  // Agent-specific insights handlers
+  ipcMain.handle('agent:insights:list', async (_event, agentId: string) => {
+    const config = getAgentConfig(agentId)
+    return config?.learned_insights ? JSON.parse(config.learned_insights) : null
+  })
+
+  ipcMain.handle('agent:insights:save', async (_event, { agentId, insights }: { agentId: string; insights: LearnedInsight[] }) => {
+    updateAgentConfig(agentId, { learned_insights: insights })
+  })
+
+  ipcMain.handle('agent:insights:add', async (_event, { agentId, content, source }: { agentId: string; content: string; source: LearnedInsight['source'] }) => {
+    const config = getAgentConfig(agentId)
+    const currentInsights: LearnedInsight[] = config?.learned_insights ? JSON.parse(config.learned_insights) : []
+
+    const newInsight: LearnedInsight = {
+      id: `insight_${Date.now()}`,
+      content,
+      source,
+      createdAt: new Date().toISOString(),
+      enabled: true
+    }
+
+    updateAgentConfig(agentId, { learned_insights: [...currentInsights, newInsight] })
+    return newInsight
+  })
+
+  ipcMain.handle('agent:insights:remove', async (_event, { agentId, id }: { agentId: string; id: string }) => {
+    const config = getAgentConfig(agentId)
+    const currentInsights: LearnedInsight[] = config?.learned_insights ? JSON.parse(config.learned_insights) : []
+    const updatedInsights = currentInsights.filter(i => i.id !== id)
+    updateAgentConfig(agentId, { learned_insights: updatedInsights })
+  })
+
+  ipcMain.handle('agent:insights:toggle', async (_event, { agentId, id }: { agentId: string; id: string }) => {
+    const config = getAgentConfig(agentId)
+    const currentInsights: LearnedInsight[] = config?.learned_insights ? JSON.parse(config.learned_insights) : []
+    const updatedInsights = currentInsights.map(i =>
+      i.id === id ? { ...i, enabled: !i.enabled } : i
+    )
+    updateAgentConfig(agentId, { learned_insights: updatedInsights })
   })
 
   // Read a binary file (images, PDFs, etc.) and return as base64

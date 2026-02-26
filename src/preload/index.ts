@@ -427,6 +427,72 @@ const api = {
     },
     getColors: (): Promise<string[]> => {
       return ipcRenderer.invoke('agents:getColors')
+    },
+    // Agent-specific config APIs - return null if no agent-specific config exists
+    getMcpServers: (agentId: string): Promise<Array<{
+      id: string
+      name: string
+      command: string
+      args: string[]
+      enabled: boolean
+      env?: Record<string, string>
+    }> | null> => {
+      return ipcRenderer.invoke('agent:mcp:list', agentId)
+    },
+    saveMcpServers: (agentId: string, servers: Array<{
+      id: string
+      name: string
+      command: string
+      args: string[]
+      enabled: boolean
+      env?: Record<string, string>
+    }>): Promise<void> => {
+      return ipcRenderer.invoke('agent:mcp:save', { agentId, servers })
+    },
+    getToolConfigs: (agentId: string): Promise<Array<{ id: string; enabled: boolean; requireApproval?: boolean }> | null> => {
+      return ipcRenderer.invoke('agent:tools:getConfigs', agentId)
+    },
+    saveToolConfigs: (agentId: string, configs: Array<{ id: string; enabled: boolean; requireApproval?: boolean }>): Promise<void> => {
+      return ipcRenderer.invoke('agent:tools:saveConfigs', { agentId, configs })
+    },
+    getCustomPrompt: (agentId: string): Promise<string | null | undefined> => {
+      return ipcRenderer.invoke('agent:prompt:getCustom', agentId)
+    },
+    setCustomPrompt: (agentId: string, prompt: string | null): Promise<void> => {
+      return ipcRenderer.invoke('agent:prompt:setCustom', { agentId, prompt })
+    },
+    getInsights: (agentId: string): Promise<Array<{
+      id: string
+      content: string
+      source: 'tool_feedback' | 'user_feedback' | 'auto_learned'
+      createdAt: string
+      enabled: boolean
+    }> | null> => {
+      return ipcRenderer.invoke('agent:insights:list', agentId)
+    },
+    saveInsights: (agentId: string, insights: Array<{
+      id: string
+      content: string
+      source: string
+      createdAt: string
+      enabled: boolean
+    }>): Promise<void> => {
+      return ipcRenderer.invoke('agent:insights:save', { agentId, insights })
+    },
+    addInsight: (agentId: string, content: string, source: 'tool_feedback' | 'user_feedback' | 'auto_learned'): Promise<{
+      id: string
+      content: string
+      source: string
+      createdAt: string
+      enabled: boolean
+    }> => {
+      return ipcRenderer.invoke('agent:insights:add', { agentId, content, source })
+    },
+    removeInsight: (agentId: string, id: string): Promise<void> => {
+      return ipcRenderer.invoke('agent:insights:remove', { agentId, id })
+    },
+    toggleInsight: (agentId: string, id: string): Promise<void> => {
+      return ipcRenderer.invoke('agent:insights:toggle', { agentId, id })
     }
   },
   whatsapp: {
@@ -539,6 +605,246 @@ const api = {
       requireApproval: boolean
     }>> => {
       return ipcRenderer.invoke('whatsapp:getTools')
+    }
+  },
+  googleWorkspace: {
+    // Connection management
+    connect: (): Promise<string> => {
+      return ipcRenderer.invoke('google-workspace:connect')
+    },
+    disconnect: (): Promise<void> => {
+      return ipcRenderer.invoke('google-workspace:disconnect')
+    },
+    getStatus: (): Promise<{
+      connected: boolean
+      email: string | null
+      connectedAt: number | null
+      services: {
+        gmail: boolean
+        calendar: boolean
+        drive: boolean
+        docs: boolean
+      }
+    }> => {
+      return ipcRenderer.invoke('google-workspace:getStatus')
+    },
+    isConnected: (): Promise<boolean> => {
+      return ipcRenderer.invoke('google-workspace:isConnected')
+    },
+    // Event subscriptions
+    subscribeConnection: (): Promise<void> => {
+      return ipcRenderer.invoke('google-workspace:subscribeConnection')
+    },
+    unsubscribeConnection: (): Promise<void> => {
+      return ipcRenderer.invoke('google-workspace:unsubscribeConnection')
+    },
+    onConnectionChange: (callback: (status: {
+      connected: boolean
+      email: string | null
+      connectedAt: number | null
+      services: {
+        gmail: boolean
+        calendar: boolean
+        drive: boolean
+        docs: boolean
+      }
+    }) => void): (() => void) => {
+      const handler = (_: unknown, status: {
+        connected: boolean
+        email: string | null
+        connectedAt: number | null
+        services: {
+          gmail: boolean
+          calendar: boolean
+          drive: boolean
+          docs: boolean
+        }
+      }): void => {
+        callback(status)
+      }
+      ipcRenderer.on('google-workspace:connectionChange', handler)
+      return () => {
+        ipcRenderer.removeListener('google-workspace:connectionChange', handler)
+      }
+    },
+    // Gmail operations
+    searchEmails: (query: string, maxResults?: number): Promise<Array<{
+      id: string
+      threadId: string
+      subject: string
+      from: string
+      date: number
+      snippet: string
+    }>> => {
+      return ipcRenderer.invoke('google-workspace:gmail:search', query, maxResults)
+    },
+    getEmail: (messageId: string): Promise<{
+      id: string
+      threadId: string
+      subject: string
+      from: string
+      to: string[]
+      cc?: string[]
+      date: number
+      snippet: string
+      body: string
+      attachments?: Array<{
+        filename: string
+        mimeType: string
+        size: number
+        attachmentId: string
+      }>
+    }> => {
+      return ipcRenderer.invoke('google-workspace:gmail:get', messageId)
+    },
+    sendEmail: (to: string, subject: string, body: string, cc?: string, bcc?: string): Promise<{
+      messageId: string
+      threadId: string
+    }> => {
+      return ipcRenderer.invoke('google-workspace:gmail:send', to, subject, body, cc, bcc)
+    },
+    // Calendar operations
+    getEvents: (calendarId: string, startDate: string, endDate: string, maxResults?: number): Promise<Array<{
+      id: string
+      summary: string
+      description?: string
+      start: string
+      end: string
+      attendees?: string[]
+      location?: string
+    }>> => {
+      return ipcRenderer.invoke('google-workspace:calendar:getEvents', calendarId, startDate, endDate, maxResults)
+    },
+    createEvent: (calendarId: string, event: {
+      summary: string
+      description?: string
+      start: string
+      end: string
+      attendees?: string[]
+      location?: string
+    }): Promise<{
+      id: string
+      summary: string
+      description?: string
+      start: string
+      end: string
+      attendees?: string[]
+      location?: string
+    }> => {
+      return ipcRenderer.invoke('google-workspace:calendar:createEvent', calendarId, event)
+    },
+    updateEvent: (calendarId: string, eventId: string, updates: {
+      summary?: string
+      description?: string
+      start?: string
+      end?: string
+      attendees?: string[]
+      location?: string
+    }): Promise<{
+      id: string
+      summary: string
+      description?: string
+      start: string
+      end: string
+      attendees?: string[]
+      location?: string
+    }> => {
+      return ipcRenderer.invoke('google-workspace:calendar:updateEvent', calendarId, eventId, updates)
+    },
+    // Drive operations
+    listFiles: (query?: string, folderId?: string, maxResults?: number): Promise<Array<{
+      id: string
+      name: string
+      mimeType: string
+      size?: number
+      modifiedTime: string
+      webViewLink?: string
+    }>> => {
+      return ipcRenderer.invoke('google-workspace:drive:listFiles', query, folderId, maxResults)
+    },
+    getFileContent: (fileId: string): Promise<string> => {
+      return ipcRenderer.invoke('google-workspace:drive:getFile', fileId)
+    },
+    // Docs operations
+    readDocument: (documentId: string): Promise<{
+      documentId: string
+      title: string
+      body: string
+    }> => {
+      return ipcRenderer.invoke('google-workspace:docs:readDocument', documentId)
+    },
+    readSpreadsheet: (spreadsheetId: string, range?: string): Promise<{
+      spreadsheetId: string
+      title: string
+      sheets: Array<{
+        sheetId: number
+        title: string
+        data: string[][]
+      }>
+    }> => {
+      return ipcRenderer.invoke('google-workspace:sheets:readSpreadsheet', spreadsheetId, range)
+    },
+    // Tools info for UI
+    getTools: (): Promise<Array<{
+      id: string
+      name: string
+      description: string
+      requireApproval: boolean
+      service: 'gmail' | 'calendar' | 'drive' | 'docs'
+    }>> => {
+      return ipcRenderer.invoke('google-workspace:getTools')
+    }
+  },
+  exa: {
+    // Connection management
+    connect: (apiKey?: string): Promise<void> => {
+      return ipcRenderer.invoke('exa:connect', apiKey)
+    },
+    disconnect: (): Promise<void> => {
+      return ipcRenderer.invoke('exa:disconnect')
+    },
+    getStatus: (): Promise<{
+      connected: boolean
+      apiKeyConfigured: boolean
+      error?: string
+    }> => {
+      return ipcRenderer.invoke('exa:getStatus')
+    },
+    isConnected: (): Promise<boolean> => {
+      return ipcRenderer.invoke('exa:isConnected')
+    },
+    // Event subscriptions
+    subscribeConnection: (): Promise<void> => {
+      return ipcRenderer.invoke('exa:subscribeConnection')
+    },
+    unsubscribeConnection: (): Promise<void> => {
+      return ipcRenderer.invoke('exa:unsubscribeConnection')
+    },
+    onConnectionChange: (callback: (status: {
+      connected: boolean
+      apiKeyConfigured: boolean
+      error?: string
+    }) => void): (() => void) => {
+      const handler = (_: unknown, status: {
+        connected: boolean
+        apiKeyConfigured: boolean
+        error?: string
+      }): void => {
+        callback(status)
+      }
+      ipcRenderer.on('exa:connectionChange', handler)
+      return () => {
+        ipcRenderer.removeListener('exa:connectionChange', handler)
+      }
+    },
+    // Tools info for UI
+    getTools: (): Promise<Array<{
+      id: string
+      name: string
+      description: string
+      requireApproval: boolean
+    }>> => {
+      return ipcRenderer.invoke('exa:getTools')
     }
   }
 }

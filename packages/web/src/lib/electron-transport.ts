@@ -123,8 +123,11 @@ export class ElectronIPCTransport implements UseStreamTransport {
       return this.createErrorGenerator('MISSING_MESSAGE', 'Message content is required')
     }
 
+    // Extract plan_mode from configurable
+    const planMode = payload.config?.configurable?.plan_mode as boolean | undefined
+
     // Create an async generator that bridges IPC events
-    return this.createStreamGenerator(threadId, messageContent, payload.command, payload.signal!, modelId)
+    return this.createStreamGenerator(threadId, messageContent, payload.command, payload.signal!, modelId, planMode)
   }
 
   private async *createErrorGenerator(code: string, message: string): AsyncGenerator<StreamEvent> {
@@ -139,7 +142,8 @@ export class ElectronIPCTransport implements UseStreamTransport {
     message: string,
     command: unknown,
     signal: AbortSignal,
-    modelId?: string
+    modelId?: string,
+    planMode?: boolean
   ): AsyncGenerator<StreamEvent> {
     // Create a queue to buffer events from IPC
     const eventQueue: StreamEvent[] = []
@@ -180,7 +184,7 @@ export class ElectronIPCTransport implements UseStreamTransport {
           eventQueue.push(sdkEvent)
         }
       }
-    }, modelId)
+    }, modelId, planMode)
 
     // Handle abort signal
     if (signal) {
@@ -659,6 +663,10 @@ export class ElectronIPCTransport implements UseStreamTransport {
 
         // Extract ALL action requests (tool calls) that need approval
         if (actionRequests?.length) {
+          // Track how many tool calls of each name we've assigned IDs to
+          // This is needed when multiple tool calls have the same name (e.g., two execute calls)
+          const usedIndexByName = new Map<string, number>()
+
           // Build array of all tool calls from actionRequests
           const toolCalls = actionRequests.map((action) => {
             // The actionRequest may not include tool_call.id - look up from tracked tool calls
@@ -668,9 +676,13 @@ export class ElectronIPCTransport implements UseStreamTransport {
               // Find the tool call ID from our tracked completed tool calls
               const trackedToolCalls = this.completedToolCallsByName.get(action.name)
               if (trackedToolCalls && trackedToolCalls.length > 0) {
-                // Get the most recent tool call with this name
-                const lastTracked = trackedToolCalls[trackedToolCalls.length - 1]
-                toolCallId = lastTracked.id
+                // Get the next unused index for this tool name
+                const usedIndex = usedIndexByName.get(action.name) || 0
+                // Use the tracked tool call at this index if available, otherwise use the last one
+                const indexToUse = Math.min(usedIndex, trackedToolCalls.length - 1)
+                toolCallId = trackedToolCalls[indexToUse].id
+                // Increment the used index for next tool call with same name
+                usedIndexByName.set(action.name, usedIndex + 1)
               }
             }
 

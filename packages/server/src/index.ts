@@ -12,6 +12,7 @@ import { registerWebSocketHandlers } from './websocket/index.js'
 import { initializeHookSystem } from './services/hooks/index.js'
 import { connectionManager } from './services/apps/connection-manager.js'
 import { registerWhatsAppAdapter } from './services/apps/whatsapp/whatsapp-adapter.js'
+import { initializeCronjobScheduler } from './services/cronjobs/index.js'
 
 const app = express()
 const httpServer = createServer(app)
@@ -74,6 +75,10 @@ async function main() {
   // Initialize hook system
   initializeHookSystem()
   console.log('Hook system initialized')
+
+  // Initialize cronjob scheduler
+  await initializeCronjobScheduler()
+  console.log('Cronjob scheduler initialized')
 
   // Initialize connection manager and register adapters
   registerWhatsAppAdapter()

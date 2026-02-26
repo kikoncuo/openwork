@@ -44,6 +44,7 @@ export interface ThreadState {
   activeTab: 'agent' | string
   fileContents: Record<string, string>
   tokenUsage: TokenUsage | null
+  inputText: string
 }
 
 // Stream instance type
@@ -72,6 +73,7 @@ export interface ThreadActions {
   closeFile: (path: string) => void
   setActiveTab: (tab: 'agent' | string) => void
   setFileContents: (path: string, content: string) => void
+  setInputText: (text: string) => void
 }
 
 // Context value
@@ -98,7 +100,8 @@ const createDefaultThreadState = (): ThreadState => ({
   openFiles: [],
   activeTab: 'agent',
   fileContents: {},
-  tokenUsage: null
+  tokenUsage: null,
+  inputText: ''
 })
 
 const defaultStreamData: StreamData = {
@@ -298,7 +301,7 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
 
     // Check for authentication errors
     if (errorMessage.includes('401') || errorMessage.includes('invalid_api_key') || errorMessage.includes('authentication')) {
-      return 'Authentication failed. Please check your API key in settings.'
+      return 'We apologize, but there is a problem with the service. Please try again later.'
     }
 
     // Return the original message for other errors
@@ -467,6 +470,9 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
           updateThreadState(threadId, (state) => ({
             fileContents: { ...state.fileContents, [path]: content }
           }))
+        },
+        setInputText: (text: string) => {
+          updateThreadState(threadId, () => ({ inputText: text }))
         }
       }
 

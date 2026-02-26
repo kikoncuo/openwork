@@ -1,10 +1,5 @@
 import { Router } from 'express'
-import {
-  getApiKey,
-  setApiKey,
-  deleteApiKey,
-  hasApiKey
-} from '../services/storage.js'
+import { hasApiKey } from '../services/storage.js'
 import { getDefaultModel, setDefaultModel } from '../services/settings.js'
 import type { ModelConfig, Provider } from '../services/types.js'
 
@@ -14,7 +9,8 @@ const router = Router()
 const PROVIDERS: Omit<Provider, 'hasApiKey'>[] = [
   { id: 'anthropic', name: 'Anthropic' },
   { id: 'openai', name: 'OpenAI' },
-  { id: 'google', name: 'Google' }
+  { id: 'google', name: 'Google' },
+  { id: 'openrouter', name: 'OpenRouter' }
 ]
 
 // Available models configuration (updated Jan 2026)
@@ -245,38 +241,7 @@ router.put('/default', async (req, res) => {
   }
 })
 
-// Get API key for a provider
-router.get('/providers/:providerId/key', async (req, res) => {
-  try {
-    const apiKey = getApiKey(req.params.providerId)
-    res.json({ apiKey: apiKey ?? null })
-  } catch (error) {
-    console.error('[Models] Get API key error:', error)
-    res.status(500).json({ error: 'Failed to get API key' })
-  }
-})
-
-// Set API key for a provider
-router.put('/providers/:providerId/key', async (req, res) => {
-  try {
-    const { apiKey } = req.body
-    setApiKey(req.params.providerId, apiKey)
-    res.json({ success: true })
-  } catch (error) {
-    console.error('[Models] Set API key error:', error)
-    res.status(500).json({ error: 'Failed to set API key' })
-  }
-})
-
-// Delete API key for a provider
-router.delete('/providers/:providerId/key', async (req, res) => {
-  try {
-    deleteApiKey(req.params.providerId)
-    res.json({ success: true })
-  } catch (error) {
-    console.error('[Models] Delete API key error:', error)
-    res.status(500).json({ error: 'Failed to delete API key' })
-  }
-})
+// API key management endpoints removed - keys are now managed server-side
+// See packages/server/.env for API key configuration
 
 export default router

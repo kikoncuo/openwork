@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
-import { Send, Square, Loader2, AlertCircle, X } from 'lucide-react'
+import { Send, Square, Loader2, AlertCircle, X, ClipboardList } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useAppStore } from '@/lib/store'
+import { cn } from '@/lib/utils'
 import { useCurrentThread, useThreadStream } from '@/lib/thread-context'
 import { MessageBubble } from './MessageBubble'
 import { ModelSwitcher } from './ModelSwitcher'
@@ -28,7 +29,6 @@ interface ChatContainerProps {
 }
 
 export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Element {
-  const [input, setInput] = useState('')
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
@@ -51,7 +51,11 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     setPendingApproval,
     appendMessage,
     setError,
-    clearError
+    clearError,
+    planMode,
+    setPlanMode,
+    inputText,
+    setInputText
   } = useCurrentThread(threadId)
 
   // Get the stream data via subscription - reactive updates without re-rendering provider
@@ -268,7 +272,7 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
 
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
-    if (!input.trim() || isLoading || !stream) return
+    if (!inputText.trim() || isLoading || !stream) return
 
     if (threadError) {
       clearError()
@@ -278,8 +282,8 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
       setPendingApproval(null)
     }
 
-    const message = input.trim()
-    setInput('')
+    const message = inputText.trim()
+    setInputText('')
 
     const isFirstMessage = threadMessages.length === 0
 
@@ -307,7 +311,7 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
       },
       {
         config: {
-          configurable: { thread_id: threadId, model_id: currentModel }
+          configurable: { thread_id: threadId, model_id: currentModel, plan_mode: planMode }
         }
       }
     )
@@ -331,10 +335,24 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
 
   useEffect(() => {
     adjustTextareaHeight()
-  }, [input])
+  }, [inputText])
 
   const handleCancel = async (): Promise<void> => {
     await stream?.stop()
+  }
+
+  const handleTogglePlanMode = async (): Promise<void> => {
+    const newValue = !planMode
+    setPlanMode(newValue)
+    try {
+      const thread = threads.find(t => t.thread_id === threadId)
+      const existingMetadata = (thread?.metadata as Record<string, unknown>) || {}
+      await window.api.threads.update(threadId, {
+        metadata: { ...existingMetadata, plan_mode: newValue }
+      })
+    } catch (error) {
+      console.error('[ChatContainer] Failed to persist plan_mode:', error)
+    }
   }
 
   return (
@@ -407,10 +425,23 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
         <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
           <div className="flex flex-col gap-2">
             <div className="flex items-end gap-2">
+              {/* Plan Mode Toggle */}
+              <div className="flex items-center justify-center shrink-0 h-12">
+                <Button
+                  type="button"
+                  variant={planMode ? "default" : "ghost"}
+                  size="icon"
+                  onClick={handleTogglePlanMode}
+                  title={planMode ? "Plan Mode ON" : "Plan Mode OFF"}
+                  className={cn("rounded-md", planMode && "bg-blue-600 hover:bg-blue-700 text-white")}
+                >
+                  <ClipboardList className="size-4" />
+                </Button>
+              </div>
               <textarea
                 ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Message..."
                 disabled={isLoading}
@@ -424,12 +455,18 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
                     <Square className="size-4" />
                   </Button>
                 ) : (
-                  <Button type="submit" variant="default" size="icon" disabled={!input.trim()} className="rounded-md">
+                  <Button type="submit" variant="default" size="icon" disabled={!inputText.trim()} className="rounded-md">
                     <Send className="size-4" />
                   </Button>
                 )}
               </div>
             </div>
+            {planMode && (
+              <div className="text-xs text-blue-500 font-medium flex items-center gap-1 mt-1">
+                <ClipboardList className="size-3" />
+                Plan Mode — Agent will research and create a plan before acting
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ModelSwitcher threadId={threadId} />

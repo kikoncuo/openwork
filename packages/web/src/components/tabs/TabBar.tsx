@@ -25,18 +25,20 @@ export function TabBar({ className, threadId: propThreadId }: TabBarProps) {
       "flex items-center h-9 border-b border-border bg-sidebar overflow-x-auto scrollbar-hide",
       className
     )}>
-      {/* Agent Selector - Shows all agents with active indicator */}
-      <div
-        className={cn(
-          "flex items-center px-2 h-full shrink-0 border-r border-border cursor-pointer",
-          activeTab === 'agent'
-            ? "bg-primary/10 border-b-2 border-b-primary"
-            : "hover:bg-background-interactive"
-        )}
-        onClick={() => setActiveTab('agent')}
-      >
-        <AgentSelector />
-      </div>
+      {/* Agent Selector - Shows all agents with active indicator (hidden when files are open) */}
+      {openFiles.length === 0 && (
+        <div
+          className={cn(
+            "flex items-center px-2 h-full shrink-0 border-r border-border cursor-pointer",
+            activeTab === 'agent'
+              ? "bg-primary/10 border-b-2 border-b-primary"
+              : "hover:bg-background-interactive"
+          )}
+          onClick={() => setActiveTab('agent')}
+        >
+          <AgentSelector />
+        </div>
+      )}
 
       {/* File Tabs */}
       {openFiles.map((file) => (
@@ -77,11 +79,14 @@ function FileTab({ file, isActive, onSelect, onClose }: FileTabProps) {
   }
 
   return (
-    <button
+    <div
+      role="tab"
+      tabIndex={0}
       onClick={onSelect}
       onMouseDown={handleMouseDown}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect() } }}
       className={cn(
-        "group flex items-center gap-2 px-3 h-full text-sm transition-colors shrink-0 border-r border-border max-w-[200px]",
+        "group flex items-center gap-2 px-3 h-full text-sm transition-colors shrink-0 border-r border-border max-w-[200px] cursor-pointer",
         isActive
           ? "bg-background text-foreground border-b-2 border-b-primary"
           : "text-muted-foreground hover:text-foreground hover:bg-background-interactive"
@@ -99,7 +104,7 @@ function FileTab({ file, isActive, onSelect, onClose }: FileTabProps) {
       >
         <X className="size-3" />
       </button>
-    </button>
+    </div>
   )
 }
 

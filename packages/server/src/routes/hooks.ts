@@ -53,7 +53,7 @@ router.get('/', requireAuth, async (req, res) => {
  */
 router.patch('/:id', requireAuth, async (req, res) => {
   try {
-    const { id } = req.params
+    const id = req.params.id as string
     const { enabled } = req.body
 
     if (typeof enabled !== 'boolean') {
@@ -170,7 +170,7 @@ router.post('/test', requireAuth, async (req, res) => {
 router.get('/webhooks', requireAuth, async (req, res) => {
   try {
     const userId = req.user!.userId
-    const webhooks = getWebhooks(userId)
+    const webhooks = await getWebhooks(userId)
 
     // Transform for API response (omit secret)
     const response = webhooks.map(w => ({
@@ -200,9 +200,9 @@ router.get('/webhooks', requireAuth, async (req, res) => {
 router.get('/webhooks/:id', requireAuth, async (req, res) => {
   try {
     const userId = req.user!.userId
-    const { id } = req.params
+    const id = req.params.id as string
 
-    const webhook = getWebhook(userId, id)
+    const webhook = await getWebhook(userId, id)
     if (!webhook) {
       return res.status(404).json({ error: 'Webhook not found' })
     }
@@ -250,7 +250,7 @@ router.post('/webhooks', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid URL' })
     }
 
-    const webhook = createWebhook({
+    const webhook = await createWebhook({
       userId,
       name,
       url,
@@ -286,7 +286,7 @@ router.post('/webhooks', requireAuth, async (req, res) => {
 router.patch('/webhooks/:id', requireAuth, async (req, res) => {
   try {
     const userId = req.user!.userId
-    const { id } = req.params
+    const id = req.params.id as string
     const { name, url, secret, eventTypes, enabled, retryCount, timeoutMs } = req.body
 
     // Validate URL if provided
@@ -314,7 +314,7 @@ router.patch('/webhooks/:id', requireAuth, async (req, res) => {
     if (retryCount !== undefined) updates.retryCount = retryCount
     if (timeoutMs !== undefined) updates.timeoutMs = timeoutMs
 
-    const webhook = updateWebhook(userId, id, updates)
+    const webhook = await updateWebhook(userId, id, updates)
     if (!webhook) {
       return res.status(404).json({ error: 'Webhook not found' })
     }
@@ -344,9 +344,9 @@ router.patch('/webhooks/:id', requireAuth, async (req, res) => {
 router.delete('/webhooks/:id', requireAuth, async (req, res) => {
   try {
     const userId = req.user!.userId
-    const { id } = req.params
+    const id = req.params.id as string
 
-    const deleted = deleteWebhook(userId, id)
+    const deleted = await deleteWebhook(userId, id)
     if (!deleted) {
       return res.status(404).json({ error: 'Webhook not found' })
     }

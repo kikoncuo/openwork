@@ -46,8 +46,40 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json()
 }
 
+async function requestBlob(path: string): Promise<Blob> {
+  // Get the current access token
+  const token = getAccessToken()
+
+  const headers: Record<string, string> = {}
+
+  // Add authorization header if we have a token
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers,
+    credentials: 'include',
+  })
+
+  if (!response.ok) {
+    // Handle 401 Unauthorized - clear auth state
+    if (response.status === 401) {
+      // Import dynamically to avoid circular dependencies
+      const { useAuthStore } = await import('@/lib/auth-store')
+      useAuthStore.getState().logout()
+    }
+
+    const error = await response.json().catch(() => ({ error: response.statusText }))
+    throw new Error(error.error || `API error: ${response.status}`)
+  }
+
+  return response.blob()
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
+  getBlob: (path: string) => requestBlob(path),
   post: <T>(path: string, body?: unknown) => request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
   patch: <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
   put: <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
